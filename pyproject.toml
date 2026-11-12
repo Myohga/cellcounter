@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cellcounter"
+description = "免疫染色画像のマーカー陽性判定"
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "opencv-python-headless",
+    "czifile>=2026.8.16",
+    "cellpose>=4.0",
+    "openpyxl",
+    "pillow",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["cellcounter"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cellcounter.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
