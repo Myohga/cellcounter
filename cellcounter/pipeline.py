@@ -102,4 +102,3 @@ def run_judgement(session: Session, control: ControlData | None = None) -> None:
         nucleus.pan_channel = nucleus.id in flagged
     if control:
         session.add_warnings(control.warnings)
-    session.dirty = True

@@ -111,13 +111,28 @@ def _analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    # 日本語 Windows のコンソール（cp932）は µ などを表示できず、print が例外で止まる
-    for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(errors="replace")
+def _gui(args: argparse.Namespace) -> int:
+    # 画面を使わない info / analyze では、napari と Qt を読み込まない
+    from .gui.app import run
 
-    parser = argparse.ArgumentParser(prog="cellcounter", description="免疫染色画像のマーカー陽性判定")
-    commands = parser.add_subparsers(dest="command", required=True)
+    return run(args.file)
+
+
+def main(argv: list[str] | None = None) -> int:
+    # 日本語 Windows のコンソール（cp932）は µ などを表示できず、print が例外で止まる。
+    # コンソール無しで起動したとき（pythonw）は stdout が無い
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.reconfigure(errors="replace")
+
+    parser = argparse.ArgumentParser(
+        prog="cellcounter", description="免疫染色画像のマーカー陽性判定。何も指定しなければ画面を開く")
+    parser.set_defaults(run=_gui, file=None)
+    commands = parser.add_subparsers(dest="command")
+
+    gui = commands.add_parser("gui", help="画面を開く（既定）")
+    gui.add_argument("file", nargs="?", help="起動してすぐ開く .czi か作業ファイル")
+    gui.set_defaults(run=_gui)
 
     info = commands.add_parser("info", help="シーンとチャンネルの一覧を表示する")
     info.add_argument("czi")
