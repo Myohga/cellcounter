@@ -61,7 +61,7 @@ def render(session: Session, marker: str | None) -> Image.Image:
     """marker が None なら「DAPI のみ」。下の帯に凡例と件数を入れる。"""
     canvas = np.ascontiguousarray(_background(session, marker))
     half = max(3, round(session.diameter_px * 0.3))
-    thickness = 1 if session.diameter_px < 20 else 2
+    thickness = 1
     counts = dict.fromkeys(COLORS, 0)
     for nucleus in session.nuclei.values():
         kind = session.marks.category(marker, nucleus.id)
