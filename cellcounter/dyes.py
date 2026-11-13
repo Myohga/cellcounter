@@ -26,6 +26,14 @@ _ALEXA = re.compile(r"(?:alexafluor|alexa|af)(\d{3})")
 _PLACEHOLDER = re.compile(r"dye\d+")
 
 
+def color_of_wavelength(emission_nm: float | None) -> str:
+    """表示色がメタデータに無いときの色。蛍光波長に近い見た目の色にする。"""
+    if not emission_nm:
+        return "#FFFFFF"
+    stops = ((480.0, "#0076FF"), (540.0, "#00FF33"), (585.0, "#FF7E00"), (640.0, "#FF0014"))
+    return next((color for limit, color in stops if emission_nm < limit), "#FF00FF")
+
+
 def normalize(text: str) -> str:
     """表記の揺れを消す（英数字だけを残して小文字にする）。"""
     return re.sub(r"[^a-z0-9]", "", str(text).lower())

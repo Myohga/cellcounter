@@ -20,8 +20,9 @@ CYTOPLASM_PX = 10
 BACKGROUND = 200.0
 NOISE = 20.0
 CELL_SD = 10.0
-CHANNELS = (("H3342-T1", "Hoechst 33342", 455.0), ("AF488-T2", "Alexa Fluor 488", 517.0),
-            ("AF555-T1", "Alexa Fluor 555", 568.0))
+CHANNELS = (("H3342-T1", "Hoechst 33342", 455.0, "#0076FF"),
+            ("AF488-T2", "Alexa Fluor 488", 517.0, "#00FF33"),
+            ("AF555-T1", "Alexa Fluor 555", 568.0, "#FF7E00"))
 
 
 def _stamp(labels: np.ndarray, cy: int, cx: int, nucleus_id: int, radius: int = RADIUS) -> None:
@@ -84,8 +85,8 @@ def marker_plane(labels: np.ndarray, positive: set[int], where: str, seed: int,
 
 
 def fake_image(planes: list[np.ndarray], bits: int = 12, path: str = "synthetic.czi") -> LoadedImage:
-    channels = [ChannelInfo(index, name, fluor, None, emission, "Fluorescence")
-                for index, (name, fluor, emission) in enumerate(CHANNELS[:len(planes)])]
+    channels = [ChannelInfo(index, name, fluor, None, emission, "Fluorescence", color)
+                for index, (name, fluor, emission, color) in enumerate(CHANNELS[:len(planes)])]
     meta = ImageMeta(channels, UM_PER_PX, bits, "Plan-Apochromat 20x/0.8 M27")
     return LoadedImage(path, 0, np.stack(planes), meta, "max", 1)
 

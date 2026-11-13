@@ -14,8 +14,6 @@ from .session import Session, tab_name
 
 COLORS = {AUTO: (255, 221, 0), ADDED: (0, 229, 255), REMOVED: (255, 64, 64)}
 CAPTIONS = {AUTO: "自動で付いた ×", ADDED: "人が足した ×", REMOVED: "人が消した ×"}
-_DAPI_TINT = (0.25, 0.45, 1.0)
-_MARKER_TINT = (0.3, 1.0, 0.2)
 _FONTS = (
     r"C:\Windows\Fonts\meiryo.ttc", r"C:\Windows\Fonts\YuGothM.ttc",
     r"C:\Windows\Fonts\msgothic.ttc",
@@ -37,11 +35,17 @@ def _scaled(session: Session, channel_index: int) -> np.ndarray:
     return np.clip((plane - low) / (high - low), 0.0, 1.0)
 
 
+def rgb_of(color: str) -> tuple[float, float, float]:
+    """'#RRGGBB' を 0〜1 の (R, G, B) にする。"""
+    return tuple(int(color[position:position + 2], 16) / 255 for position in (1, 3, 5))
+
+
 def _background(session: Session, marker: str | None) -> np.ndarray:
-    layers = [(_scaled(session, session.table.dapi.index), _DAPI_TINT)]
-    if marker is not None:
-        layers.append((_scaled(session, session.judgements[marker].channel_index), _MARKER_TINT))
-    rgb = sum(layer[..., None] * np.array(tint, dtype=np.float32) for layer, tint in layers)
+    """画面と同じチャンネルを、同じ色とコントラストで重ねる。"""
+    rgb = np.zeros((*session.image.planes.shape[1:], 3), np.float32)
+    for index in session.shown_channels(marker):
+        tint = np.array(rgb_of(session.table.row(index).color), dtype=np.float32)
+        rgb += _scaled(session, index)[..., None] * tint
     return (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
 
 

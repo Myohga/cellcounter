@@ -39,3 +39,4 @@ class ControlData:
     n_cells: int
     values: dict[str, list[float]]
     warnings: list[str] = field(default_factory=list)
+    sources: list[tuple[str, int]] = field(default_factory=list)

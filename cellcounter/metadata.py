@@ -27,6 +27,7 @@ class ChannelInfo:
     excitation_nm: float | None
     emission_nm: float | None
     contrast: str
+    color: str = ""
     acquisition: dict[str, str] = field(default_factory=dict)
 
 
@@ -49,6 +50,12 @@ def _number(element: ET.Element | None, path: str) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _color(channel: ET.Element) -> str:
+    """ZEN で付けた表示色（#AARRGGBB）を #RRGGBB にする。無ければ空文字。"""
+    text = _text(channel, "Color")
+    return f"#{text[-6:].upper()}" if len(text) in (7, 9) and text.startswith("#") else ""
 
 
 def _acquisition(channel: ET.Element) -> dict[str, str]:
@@ -80,6 +87,7 @@ def parse_metadata(xml: str) -> ImageMeta:
             excitation_nm=_number(channel, "ExcitationWavelength"),
             emission_nm=_number(channel, "EmissionWavelength"),
             contrast=_text(channel, "ContrastMethod"),
+            color=_color(channel),
             acquisition=_acquisition(channel),
         ))
     if not channels:

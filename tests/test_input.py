@@ -18,7 +18,7 @@ XML = """<ImageDocument><Metadata>
  <Image><ComponentBitCount>12</ComponentBitCount>
   <ObjectiveSettings><ObjectiveRef Id="Objective:1"/></ObjectiveSettings>
   <Dimensions><Channels>
-   <Channel Id="Channel:0" Name="AF555-T1"><Fluor>Alexa Fluor 555</Fluor>
+   <Channel Id="Channel:0" Name="AF555-T1"><Fluor>Alexa Fluor 555</Fluor><Color>#FFFF7E00</Color>
     <ExcitationWavelength>553</ExcitationWavelength><EmissionWavelength>568</EmissionWavelength>
     <ContrastMethod>Fluorescence</ContrastMethod>
     <DetectorSettings><Voltage>{gain}</Voltage><DigitalGain>1</DigitalGain></DetectorSettings>
@@ -105,6 +105,8 @@ def test_table_is_built_from_metadata():
     table = build_table(parse_metadata(XML.format(gain=550)))
     assert [row.role for row in table.rows] == ["marker", "dapi", "unused"]
     assert table.dapi.name == "H3342-T3" and table.rows[0].dye == "AF555"
+    assert [row.color for row in table.rows] == ["#FF7E00", "#0076FF", "#FFFFFF"], (
+        "表示色は ZEN の色。無ければ蛍光波長から決め、蛍光でなければ白")
     with pytest.raises(ValueError, match="蛍光チャンネルではない"):
         table.set_dapi(2)
 

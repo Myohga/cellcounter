@@ -100,7 +100,14 @@ class SetupPanel(QWidget):
         self.judge_button.setMinimumHeight(36)
         self.judge_button.clicked.connect(self.judge_requested)
 
+        guide = QLabel(
+            "● を付けたチャンネルで核を検出して数えます（陽性率の分母。ふつうは DAPI / Hoechst）。"
+            "ほかのチャンネルには、マーカー名を入れて「判定」に ✓ を付けます。\n"
+            "画面に重ねる画像は、ここではなく「③ 判定・修正」で選べます。")
+        guide.setWordWrap(True)
+
         layout = QVBoxLayout(self)
+        layout.addWidget(guide)
         layout.addWidget(self.table_widget, 1)
         layout.addWidget(self.problems)
         layout.addWidget(self.warnings)
@@ -150,6 +157,19 @@ class SetupPanel(QWidget):
     def control_sources(self) -> list[tuple[str, int]]:
         return [tuple(self.controls.item(row).data(Qt.ItemDataRole.UserRole))
                 for row in range(self.controls.count())]
+
+    def set_control_sources(self, sources: list[tuple[str, int]]) -> None:
+        """作業ファイルから開いたとき、判定に使った陰性対照の一覧を戻す。"""
+        self.controls.clear()
+        for path, scene in sources:
+            self._add_control(path, scene)
+        self._on_changed(notify=False)
+
+    def _add_control(self, path: str, scene: int) -> None:
+        item = QListWidgetItem(f"{os.path.basename(path)}（シーン {scene}）")
+        item.setToolTip(path)
+        item.setData(Qt.ItemDataRole.UserRole, (path, scene))
+        self.controls.addItem(item)
 
     def _on_changed(self, notify: bool = True) -> None:
         problems = self._table.problems() if self._table else []
@@ -204,12 +224,8 @@ class SetupPanel(QWidget):
                 QMessageBox.warning(self, "陰性対照を読めません", f"{path}\n{error}")
                 continue
             for scene in scenes:
-                source = (os.path.abspath(path), scene.index)
-                if source not in existing:
-                    item = QListWidgetItem(f"{os.path.basename(path)}（シーン {scene.index}）")
-                    item.setToolTip(path)
-                    item.setData(Qt.ItemDataRole.UserRole, source)
-                    self.controls.addItem(item)
+                if (os.path.abspath(path), scene.index) not in existing:
+                    self._add_control(os.path.abspath(path), scene.index)
         self._on_changed()
 
     def _remove_controls(self) -> None:

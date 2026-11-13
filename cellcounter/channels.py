@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from .dyes import NUCLEAR_STAINS, identify_dye
+from .dyes import NUCLEAR_STAINS, color_of_wavelength, identify_dye
 from .markers import guess_location, location_spec
 from .metadata import ImageMeta
 
@@ -24,6 +24,14 @@ class ChannelRow:
     marker: str = ""
     location: str = ""
     judge: bool = False
+    color: str = "#FFFFFF"
+
+    @property
+    def title(self) -> str:
+        """画面に出す呼び名（マーカー名があればそれ、無ければ色素名かチャンネル名）。"""
+        if self.role == "dapi":
+            return f"DAPI（{self.dye or self.name}）"
+        return self.marker or self.dye or self.name
 
 
 class ChannelTable:
@@ -47,13 +55,14 @@ class ChannelTable:
         return [row for row in self.rows if row.role == "marker" and row.judge]
 
     def set_dapi(self, index: int) -> None:
+        """核を数えるチャンネルを選び直す。行に入れてあるマーカー名などは消さない。"""
         target = self.row(index)
         if not target.fluorescence:
             raise ValueError(f"{target.name} は蛍光チャンネルではないので DAPI にできません。")
         for row in self.rows:
             if row.role == "dapi":
                 row.role = "marker"
-        target.role, target.marker, target.location, target.judge = "dapi", "", "", False
+        target.role = "dapi"
 
     def set_marker(self, index: int, marker: str, location: str | None = None,
                    judge: bool = True) -> None:
@@ -98,9 +107,10 @@ def build_table(meta: ImageMeta) -> ChannelTable:
         fluorescence = channel.contrast.lower() in ("", "fluorescence")
         dye = identify_dye(channel.name, channel.fluor,
                            emission_nm=channel.emission_nm) if fluorescence else ""
+        color = channel.color or color_of_wavelength(channel.emission_nm if fluorescence else None)
         rows.append(ChannelRow(channel.index, channel.name, dye, channel.excitation_nm,
                                channel.emission_nm, fluorescence,
-                               role="marker" if fluorescence else "unused"))
+                               role="marker" if fluorescence else "unused", color=color))
     stains = [row for row in rows if row.dye in NUCLEAR_STAINS]
     if len(stains) == 1:
         stains[0].role = "dapi"
@@ -129,11 +139,12 @@ def apply_preset(table: ChannelTable, preset: dict) -> None:
         raise ValueError(f"プリセットの形式が違います（format={preset.get('format')}）。")
     matched = [(_match(table, entry), entry) for entry in preset["channels"]]
     for row, entry in matched:
+        if entry["location"]:
+            location_spec(entry["location"])
+        row.marker, row.location, row.judge = entry["marker"], entry["location"], entry["judge"]
+    for row, entry in matched:
         if entry["role"] == "dapi":
             table.set_dapi(row.index)
-    for row, entry in matched:
-        if entry["role"] == "marker" and entry["marker"]:
-            table.set_marker(row.index, entry["marker"], entry["location"], entry["judge"])
 
 
 def save_preset(path: str, preset: dict) -> None:

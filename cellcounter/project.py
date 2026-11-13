@@ -14,7 +14,7 @@ from typing import Callable
 import numpy as np
 
 from . import __version__
-from .channels import ChannelTable
+from .channels import ChannelTable, build_table
 from .czi import LoadedImage, read_scene
 from .model import ControlData, Judgement, Nucleus
 from .session import Session
@@ -61,6 +61,7 @@ def save_project(session: Session, path: str) -> None:
         },
         "control": asdict(session.control) if session.control else None,
         "contrast": _keyed(session.contrast),
+        "shown": session.shown,
         "warnings": session.warnings,
     }
     labels = io.BytesIO()
@@ -86,7 +87,11 @@ def load_project(path: str, czi_path: str | None = None,
     if labels.shape != image.planes.shape[1:]:
         raise ValueError("作業ファイルと .czi で画像の大きさが違います。別のファイルかもしれません。")
 
-    session = Session(image, ChannelTable.from_list(data["table"]), settings)
+    table = ChannelTable.from_list(data["table"])
+    # 表示色は作業の状態ではなく画像の性質なので、保存した値ではなく .czi から取り直す
+    for row, fresh in zip(table.rows, build_table(image.meta).rows):
+        row.color = fresh.color
+    session = Session(image, table, settings)
     session.warnings = list(data["warnings"])
     if os.path.isfile(image.path) and source["size"] is not None:
         stat = os.stat(image.path)
@@ -106,7 +111,11 @@ def load_project(path: str, czi_path: str | None = None,
     session.marks.counted = _unkeyed(marks["counted"])
     session.marks.positive_auto = {m: _unkeyed(v) for m, v in marks["positive_auto"].items()}
     session.marks.positive = {m: _unkeyed(v) for m, v in marks["positive"].items()}
-    session.control = ControlData(**data["control"]) if data["control"] else None
+    if data["control"]:
+        session.control = ControlData(**data["control"])
+        session.control.sources = [tuple(source) for source in session.control.sources]
     session.contrast = {index: tuple(limits)
                         for index, limits in _unkeyed(data["contrast"]).items()}
+    # 0.1.0 の途中までに保存した作業ファイルには、この項目が無い
+    session.shown = data.get("shown", {})
     return session

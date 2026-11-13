@@ -59,4 +59,5 @@ def collect_control(session: Session, sources: list[tuple[str, int]],
         files.append(name)
         n_cells += int(ids.size)
 
-    return ControlData(files, n_cells, values, warnings)
+    return ControlData(files, n_cells, values, warnings,
+                       [(os.path.abspath(path), scene) for path, scene in sources])

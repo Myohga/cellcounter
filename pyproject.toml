@@ -16,13 +16,14 @@ dependencies = [
     "cellpose>=4.0",
     "openpyxl",
     "pillow",
+    "napari[all]>=0.9",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
 
 [tool.setuptools]
-packages = ["cellcounter"]
+packages = ["cellcounter", "cellcounter.gui"]
 
 [tool.setuptools.dynamic]
 version = { attr = "cellcounter.__version__" }

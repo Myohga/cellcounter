@@ -35,7 +35,7 @@ def window(app, tmp_path):
 @pytest.fixture
 def judged(window):
     session = synth.two_marker_session(6, 6, {1, 2, 3}, {4, 5})
-    window._show_session(session)
+    window.show_session(session)
     return window
 
 
@@ -75,11 +75,11 @@ def test_judged_session_shows_tabs_marks_and_counts(judged):
     assert window.stage_label.text() == "①読み込み ✓ → ②設定 ✓ → ③修正中 → ④未出力"
     assert window.panels.isTabEnabled(PANEL_REVIEW) and window.panels.isTabEnabled(PANEL_OUTPUT)
     assert "暫定" in window.canvas.banner.text()
-    assert len(window.canvas._marks.data) == 36
+    assert window.canvas.mark_count() == 36
 
     window.canvas.tabs.setCurrentIndex(1)
     assert window.canvas.current_marker() == "NUC"
-    assert len(window.canvas._marks.data) == 3
+    assert window.canvas.mark_count() == 3
     visible = {layer.name for layer in window.canvas.model.layers if layer.visible}
     assert {"H3342-T1", "AF488-T2"} <= visible and "AF555-T1" not in visible
 
@@ -89,12 +89,12 @@ def test_click_undo_and_redo_update_the_screen(judged):
     window.canvas.tabs.setCurrentIndex(1)
     nucleus = window.session.nuclei[10]
     window._on_click(nucleus.y, nucleus.x)
-    assert len(window.canvas._marks.data) == 4 and _summary(window, 1, 2) == "4"
+    assert window.canvas.mark_count() == 4 and _summary(window, 1, 2) == "4"
     assert _summary(window, 1, 4) == "1", "人が足した数"
     assert window.actions_by_name["undo"].isEnabled()
 
     window.undo()
-    assert len(window.canvas._marks.data) == 3 and _summary(window, 1, 2) == "3"
+    assert window.canvas.mark_count() == 3 and _summary(window, 1, 2) == "3"
     assert window.actions_by_name["redo"].isEnabled()
     window.redo()
     assert _summary(window, 1, 2) == "4"
@@ -102,6 +102,45 @@ def test_click_undo_and_redo_update_the_screen(judged):
     window.canvas.step_tab(-1)
     window._on_click(15.0, 100.0)
     assert _summary(window, 0, 1) == "37", "何も無い場所のクリックで核が 1 つ増える"
+
+
+def test_background_channels_can_be_chosen_per_tab(judged):
+    """③ のチェックで背景に出す画像を変えられ、組み合わせのタブごとに覚えている。"""
+    window = judged
+    layers = {layer.name: layer for layer in window.canvas.model.layers}
+    window.canvas.tabs.setCurrentIndex(1)
+    assert not layers["AF555-T1"].visible
+    assert [check.isChecked() for check in window.review_panel.checks.values()] == [True, True, False]
+    assert window.review_panel.checks[1].text() == "NUC"
+
+    window.review_panel.checks[2].click()
+    window.review_panel.checks[0].click()
+    assert layers["AF555-T1"].visible and not layers["H3342-T1"].visible
+    assert window.session.shown_channels("NUC") == [1, 2]
+
+    window.canvas.tabs.setCurrentIndex(2)
+    assert layers["H3342-T1"].visible and not layers["AF488-T2"].visible
+    window.canvas.tabs.setCurrentIndex(1)
+    assert layers["AF555-T1"].visible and not layers["H3342-T1"].visible
+    assert window.review_panel.checks[2].isChecked()
+
+
+def test_channels_use_their_original_colors(judged):
+    window = judged
+    colors = {row.name: row.color for row in window.session.table.rows}
+    assert colors == {"H3342-T1": "#0076FF", "AF488-T2": "#00FF33", "AF555-T1": "#FF7E00"}
+    top = window.canvas._images[2].colormap.colors[-1]
+    assert [round(float(value), 2) for value in top[:3]] == [1.0, 0.49, 0.0]
+
+
+def test_marks_are_thin_lines_and_can_be_hidden(judged):
+    window = judged
+    marks = window.canvas._marks
+    assert type(marks).__name__ == "Vectors" and len(marks.data) == 2 * window.canvas.mark_count()
+    window.review_panel.marks_check.click()
+    assert not marks.visible
+    window.review_panel.marks_check.click()
+    assert marks.visible
 
 
 def test_contrast_is_kept_across_tabs(judged):
@@ -115,9 +154,9 @@ def test_contrast_is_kept_across_tabs(judged):
 
 def test_changing_the_table_after_judging_is_flagged(judged):
     window = judged
-    widgets = window.setup_panel.table_widget._widgets[1]
-    widgets.judge.setChecked(False)
-    window.setup_panel.table_widget._apply(widgets)
+    editors = window.setup_panel.table_widget.editors[1]
+    editors.judge.setChecked(False)
+    window.setup_panel.table_widget._apply(editors)
     assert "[判定] をやり直してください" in window.stage_label.text()
 
 
@@ -157,7 +196,7 @@ def test_channel_table_guesses_location_and_reports_unknown_names(app):
     table = build_table(synth.fake_image([synth.dapi_plane(synth.grid_labels(2, 2), 1)] * 3).meta)
     widget = ChannelTableWidget()
     widget.set_table(table, ["MAP2"])
-    name = widget._widgets[1].name
+    name = widget.editors[1].name
     name.setCurrentText("Islet-1")
     name.lineEdit().editingFinished.emit()
     assert (table.rows[1].marker, table.rows[1].location, table.rows[1].judge) == (
@@ -169,8 +208,25 @@ def test_channel_table_guesses_location_and_reports_unknown_names(app):
     assert table.rows[1].location == ""
     assert any("染まる場所を選んでください" in problem for problem in table.problems())
 
-    widget._widgets[2].dapi.setChecked(True)
+
+def test_choosing_another_dapi_keeps_the_marker_names(app):
+    """核を数えるチャンネルを選び直しても、入れてあった名前や設定は消えない。"""
+    table = build_table(synth.fake_image([synth.dapi_plane(synth.grid_labels(2, 2), 1)] * 3).meta)
+    table.set_marker(1, "MAP2")
+    table.set_marker(2, "Islet-1")
+    widget = ChannelTableWidget()
+    widget.set_table(table, [])
+    assert "核を検出して数えます" in widget.item(0, 2).text()
+
+    widget.dapi_buttons[2].setChecked(True)
     assert table.dapi.index == 2 and table.rows[0].role == "marker"
+    assert [row.marker for row in table.judged()] == ["MAP2"]
+    assert 2 not in widget.editors, "核を数える行には、マーカーの入力欄を出さない"
+
+    widget.dapi_buttons[0].setChecked(True)
+    assert [(row.marker, row.location, row.judge) for row in table.judged()] == [
+        ("MAP2", "fibrillar", True), ("Islet-1", "nuclear", True)]
+    assert widget.editors[2].name.currentText() == "Islet-1"
 
 
 def test_userdata_remembers_files_names_and_presets(tmp_path):

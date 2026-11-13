@@ -36,6 +36,7 @@ class Session:
         self.warnings: list[str] = list(image.warnings)
         self.dirty = False
         self.contrast: dict[int, tuple[float, float]] = {}
+        self.shown: dict[str, list[int]] = {}
         self._backgrounds: dict[int, np.ndarray] = {}
 
     @property
@@ -70,6 +71,29 @@ class Session:
                 self.image.planes[channel_index], self.diameter_px,
                 self.settings.judge.background_radius_factor)
         return self._backgrounds[channel_index]
+
+    def marker_channel(self, marker: str) -> int:
+        """マーカーが乗っているチャンネル。判定済みなら、判定したときのチャンネル。"""
+        if marker in self.judgements:
+            return self.judgements[marker].channel_index
+        for row in self.table.judged():
+            if row.marker == marker:
+                return row.index
+        raise KeyError(f"マーカー {marker} はチャンネル表にありません。")
+
+    def shown_channels(self, marker: str | None) -> list[int]:
+        """その組み合わせで背景に出すチャンネル。選び直していなければ DAPI とそのマーカー。"""
+        chosen = self.shown.get(tab_name(marker))
+        if chosen is not None:
+            return chosen
+        default = [row.index for row in self.table.rows if row.role == "dapi"]
+        if marker is not None:
+            default.append(self.marker_channel(marker))
+        return default
+
+    def set_shown(self, marker: str | None, channel_index: int, visible: bool) -> None:
+        chosen = [i for i in self.shown_channels(marker) if i != channel_index]
+        self.shown[tab_name(marker)] = sorted([*chosen, channel_index] if visible else chosen)
 
     def contrast_limits(self, channel_index: int) -> tuple[float, float]:
         """表示の黒点と白点。利用者が決めていなければ 0 〜 99.9 パーセンタイル。"""

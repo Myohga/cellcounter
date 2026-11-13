@@ -1,27 +1,24 @@
-"""ウィンドウ本体。メニュー・パネル・段階の表示と、開く → 判定 → 修正 → 出力の流れ。"""
+"""ウィンドウ本体。メニュー・パネル・段階の表示と、× の修正の操作。"""
 
 from __future__ import annotations
 
 import os
-from dataclasses import asdict
 
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import (QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox,
-                            QProgressBar, QScrollArea, QSplitter, QTabWidget)
+from qtpy.QtWidgets import (QFileDialog, QLabel, QMainWindow, QMessageBox, QProgressBar,
+                            QScrollArea, QSplitter, QTabWidget)
 
 from .. import __version__
-from ..channels import apply_preset, build_table, preset_of
-from ..control import collect_control
-from ..czi import list_scenes, read_scene
-from ..export import RESULTS_NAME, default_folder, export_results
-from ..pipeline import open_session, run_detection, run_judgement
-from ..project import EXTENSION, load_project, save_project
+from ..czi import list_scenes
+from ..export import default_folder
+from ..project import EXTENSION
 from ..session import Session
-from ..settings import Settings
 from ..userdata import UserData
+from . import flows
 from .canvas import Canvas
-from .dialogs import confirm, show_error, show_export_done, show_help
+from .dialogs import confirm, show_error, show_help
 from .file_panel import FilePanel
+from .flows import PANEL_OUTPUT, PANEL_REVIEW, PANEL_SETUP
 from .output_panel import OutputPanel
 from .review_panel import ReviewPanel
 from .setup_panel import SetupPanel
@@ -29,7 +26,6 @@ from .shortcuts import SHORTCUTS, make_action
 from .worker import TaskRunner
 
 PROVISIONAL_BANNER = "暫定（陰性対照なし）: 固定の閾値で判定しています。陽性率は参考値です。"
-PANEL_FILE, PANEL_SETUP, PANEL_REVIEW, PANEL_OUTPUT = range(4)
 _MENUS = (("ファイル", ("open", "open_project", "save_project")), ("編集", ("undo", "redo")),
           ("表示", ("next_tab", "previous_tab")), ("実行", ("judge", "export")), ("ヘルプ", ("help",)))
 
@@ -39,10 +35,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.userdata = userdata or UserData()
         self.session: Session | None = None
-        self._detected_with: dict | None = None
-        self._control_cache: tuple[str, object] | None = None
-        self._exported = False
-        self._stale = False
+        self.detected_with: dict | None = None
+        self.control_cache: tuple[str, object] | None = None
+        self.exported = False
+        self.stale = False
 
         self.canvas = Canvas()
         self.file_panel = FilePanel()
@@ -73,7 +69,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(task_label)
         self.statusBar().addPermanentWidget(bar)
         self.runner = TaskRunner(bar, task_label)
-        self.runner.busy_changed.connect(self._refresh)
+        self.runner.busy_changed.connect(self.refresh)
         self.runner.failed.connect(
             lambda title, error: show_error(self, f"{title}に失敗しました", error,
                                             self.userdata.log_path))
@@ -97,18 +93,20 @@ class MainWindow(QMainWindow):
         self.file_panel.open_requested.connect(self.choose_czi)
         self.file_panel.open_project_requested.connect(self.choose_project)
         self.file_panel.recent_chosen.connect(self.open_path)
-        self.file_panel.load_requested.connect(self.load_scene)
+        self.file_panel.load_requested.connect(lambda *args: flows.load_scene(self, *args))
         self.setup_panel.changed.connect(self._on_setup_changed)
         self.setup_panel.judge_requested.connect(self.judge)
         self.review_panel.undo_requested.connect(self.undo)
         self.review_panel.redo_requested.connect(self.redo)
         self.review_panel.contrast_changed.connect(self._on_contrast)
+        self.review_panel.channel_toggled.connect(self._on_channel_toggled)
+        self.review_panel.marks_toggled.connect(self.canvas.set_marks_visible)
         self.output_panel.export_requested.connect(self.export)
         self.output_panel.save_requested.connect(self.save_work)
         self.canvas.clicked.connect(self._on_click)
-        self.canvas.tab_changed.connect(self._refresh)
-        self._show_recent()
-        self._refresh()
+        self.canvas.tab_changed.connect(self.refresh)
+        self.show_recent()
+        self.refresh()
         if self.userdata.notice:
             self.message_label.setText(self.userdata.notice)
 
@@ -116,7 +114,7 @@ class MainWindow(QMainWindow):
     def judged(self) -> bool:
         return self.session is not None and self.session.labels is not None
 
-    # ---- 開く -------------------------------------------------------------
+    # ---- メニューとボタンから呼ばれる操作 -------------------------------------
 
     def choose_czi(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, ".czi を開く", "", "CZI (*.czi)")
@@ -130,86 +128,30 @@ class MainWindow(QMainWindow):
             self.open_path(path)
 
     def open_path(self, path: str) -> None:
-        """.czi ならシーンを並べ、1 つしか無ければそのまま読み込む。作業ファイルなら再開する。"""
-        if self.runner.busy or not self._may_discard():
-            return
-        if path.lower().endswith(EXTENSION):
-            self._open_project(path)
-            return
-        try:
-            scenes = list_scenes(path)
-        except (OSError, ValueError) as error:
-            show_error(self, "ファイルを開けません", error, self.userdata.log_path)
-            return
-        self.file_panel.set_scenes(path, scenes)
-        self.panels.setCurrentIndex(PANEL_FILE)
-        if len(scenes) == 1:
-            self.load_scene(path, scenes[0].index, self.file_panel.z_projection())
-        else:
-            self.message_label.setText("シーンを選んで [このシーンを読み込む] を押してください。")
+        flows.open_path(self, path)
 
-    def load_scene(self, path: str, scene: int, z_projection: str) -> None:
-        if self.runner.busy:
-            return
+    def judge(self) -> None:
+        flows.judge(self)
 
-        def task():
-            yield "読み込んでいます"
-            return read_scene(path, scene, z_projection)
+    def export(self) -> None:
+        flows.export(self)
 
-        def done(image) -> None:
-            if not image.meta.um_per_px:
-                value, accepted = QInputDialog.getDouble(
-                    self, "µm/px が分かりません",
-                    "メタデータに画素の大きさがありません。µm/px を入力してください。",
-                    0.3, 0.001, 100.0, 4)
-                if not accepted:
-                    return
-                image.meta.um_per_px = value
-            table = build_table(image.meta)
-            note = ""
-            if self.userdata.last_table:
-                try:
-                    apply_preset(table, self.userdata.last_table)
-                except ValueError:
-                    table = build_table(image.meta)
-                    note = "前回の設定はこの画像のチャンネルと合わないため、使っていません。"
-            settings = Settings(z_projection=z_projection)
-            self.setup_panel.apply_to(settings)
-            self._show_session(open_session(image, table, settings))
-            self.userdata.add_recent(path)
-            self._show_recent()
-            self.panels.setCurrentIndex(PANEL_SETUP)
-            self.message_label.setText(note)
+    def save_work(self) -> None:
+        flows.save_work(self)
 
-        self.runner.start("読み込み", task, done)
+    def undo(self) -> None:
+        if self.judged and not self.runner.busy and self.session.undo():
+            self._after_edit("元に戻しました")
 
-    def _open_project(self, path: str, czi_path: str | None = None) -> None:
-        def task():
-            yield "作業ファイルを開いています"
-            try:
-                return load_project(path, czi_path)
-            except FileNotFoundError as error:
-                return error
+    def redo(self) -> None:
+        if self.judged and not self.runner.busy and self.session.redo():
+            self._after_edit("やり直しました")
 
-        def done(result) -> None:
-            if isinstance(result, FileNotFoundError):
-                moved, _ = QFileDialog.getOpenFileName(
-                    self, "元の .czi が見つかりません。場所を教えてください", "", "CZI (*.czi)")
-                if moved:
-                    self._open_project(path, moved)
-                return
-            self._show_session(result)
-            self._detected_with = asdict(result.settings.detection)
-            self.userdata.add_recent(path)
-            self._show_recent()
-            self.panels.setCurrentIndex(PANEL_REVIEW if result.judgements else PANEL_SETUP)
-
-        self.runner.start("作業ファイルの読み込み", task, done)
-
-    def _show_session(self, session: Session) -> None:
+    def show_session(self, session: Session) -> None:
+        """読み込んだ画像（または開き直した作業）を、すべてのパネルに反映する。"""
         self.session = session
-        self._detected_with, self._control_cache = None, None
-        self._exported = self._stale = False
+        self.detected_with, self.control_cache = None, None
+        self.exported = self.stale = False
         image = session.image
         self.file_panel.set_scenes(image.path, list_scenes(image.path)
                                    if os.path.isfile(image.path) else [])
@@ -222,101 +164,9 @@ class MainWindow(QMainWindow):
         self.review_panel.show_session(session)
         self.output_panel.folder.setText(default_folder(image.path))
         self.canvas.show_session(session)
-        self._refresh()
+        self.refresh()
 
-    # ---- 判定・修正・出力 ---------------------------------------------------
-
-    def judge(self) -> None:
-        session = self.session
-        if session is None or self.runner.busy:
-            return
-        problems = session.table.problems()
-        if problems:
-            QMessageBox.warning(self, "チャンネル表を直してください", "\n".join(problems))
-            self.panels.setCurrentIndex(PANEL_SETUP)
-            return
-        if session.history.can_undo and not confirm(
-                self, "判定し直しますか？", "手で直した × は消えます。判定し直しますか？"):
-            return
-        self.setup_panel.apply_to(session.settings)
-        sources = self.setup_panel.control_sources()
-        detection = asdict(session.settings.detection)
-        detect = session.labels is None or detection != self._detected_with
-        measured = {**session.settings.to_dict(), "judge": {
-            **asdict(session.settings.judge), "control_percentile": None}}
-        # 対照の値は、対照のファイル・チャンネル表・設定が同じなら測り直さない
-        key = repr((sources, session.table.to_list(), measured))
-        cached = None
-        if self._control_cache and self._control_cache[0] == key:
-            cached = self._control_cache[1]
-
-        def task():
-            if detect:
-                yield "核を検出しています（Cellpose）"
-                run_detection(session)
-            control = cached
-            if sources and control is None:
-                yield f"陰性対照を測っています（{len(sources)} シーン）"
-                control = collect_control(session, sources)
-            yield "判定しています"
-            run_judgement(session, control)
-            return control
-
-        def done(control) -> None:
-            self._detected_with = detection
-            self._control_cache = (key, control) if control else None
-            self._exported = self._stale = False
-            self.userdata.remember_table(preset_of(session.table, "前回の設定"))
-            self.panels.setCurrentIndex(PANEL_REVIEW)
-            self._refresh()
-
-        self.runner.start("判定", task, done)
-
-    def export(self) -> None:
-        session = self.session
-        if not self.judged or self.runner.busy:
-            return
-        folder = self.output_panel.folder.text().strip() or default_folder(session.image.path)
-        if os.path.isfile(os.path.join(folder, RESULTS_NAME)) and not confirm(
-                self, "上書きしますか？", f"このフォルダには前の結果があります。上書きしますか？\n{folder}"):
-            return
-
-        def task():
-            yield "結果を書き出しています"
-            return export_results(session, folder)
-
-        def done(written: str) -> None:
-            self._exported = True
-            self.output_panel.result.setText(f"出力しました: {written}")
-            self._refresh()
-            show_export_done(self, written)
-
-        self.runner.start("出力", task, done)
-
-    def save_work(self) -> None:
-        session = self.session
-        if not self.judged or self.runner.busy:
-            return
-        stem = os.path.splitext(session.image.path)[0]
-        path, _ = QFileDialog.getSaveFileName(self, "作業を保存", stem + EXTENSION,
-                                              f"作業ファイル (*{EXTENSION})")
-        if not path:
-            return
-        try:
-            save_project(session, path)
-        except OSError as error:
-            show_error(self, "作業を保存できません", error, self.userdata.log_path)
-            return
-        session.dirty = False
-        self.message_label.setText(f"作業を保存しました: {os.path.basename(path)}")
-
-    def undo(self) -> None:
-        if self.judged and not self.runner.busy and self.session.undo():
-            self._after_edit("元に戻しました")
-
-    def redo(self) -> None:
-        if self.judged and not self.runner.busy and self.session.redo():
-            self._after_edit("やり直しました")
+    # ---- 画面からの知らせ ---------------------------------------------------
 
     def _on_click(self, y: float, x: float) -> None:
         session, marker = self.session, self.canvas.current_marker()
@@ -332,21 +182,26 @@ class MainWindow(QMainWindow):
         self._after_edit(message)
 
     def _after_edit(self, message: str) -> None:
-        self._exported = False
+        self.exported = False
         self.message_label.setText(message)
-        self._refresh()
+        self.refresh()
 
     def _on_contrast(self, channel_index: int, low: float, high: float) -> None:
         self.session.contrast[channel_index] = (low, high)
         self.canvas.set_contrast(channel_index, low, high)
 
+    def _on_channel_toggled(self, channel_index: int, visible: bool) -> None:
+        """背景に出す画像を、いま開いている組み合わせのタブについて変える。"""
+        self.session.set_shown(self.canvas.current_marker(), channel_index, visible)
+        self.canvas.refresh()
+
     def _on_setup_changed(self) -> None:
-        self._stale = bool(self.session and self.session.judgements)
-        self._refresh()
+        self.stale = bool(self.session and self.session.judgements)
+        self.refresh()
 
     # ---- 表示の更新 ---------------------------------------------------------
 
-    def _refresh(self, *_ignored) -> None:
+    def refresh(self, *_ignored) -> None:
         """いまの状態に合わせて、タブ・ボタンの有効無効・段階の表示・タイトルをそろえる。"""
         session, busy = self.session, self.runner.busy
         title = f"cellcounter {__version__}"
@@ -375,22 +230,22 @@ class MainWindow(QMainWindow):
 
         if not self.judged:
             review = "③未判定"
-        elif self._stale:
+        elif self.stale:
             review = "③設定を変えました（[判定] をやり直してください）"
         else:
             review = "③修正中"
         steps = ("①読み込み ✓" if session else "①読み込み",
                  "②設定 ✓" if configured else "②設定", review,
-                 "④出力済み ✓" if self._exported else "④未出力")
+                 "④出力済み ✓" if self.exported else "④未出力")
         self.stage_label.setText(" → ".join(steps))
 
-    def _show_recent(self) -> None:
+    def show_recent(self) -> None:
         self.file_panel.set_recent(self.userdata.recent_files)
         self.recent_menu.clear()
         for path in self.userdata.recent_files:
             self.recent_menu.addAction(path, lambda _checked=False, p=path: self.open_path(p))
 
-    def _may_discard(self) -> bool:
+    def may_discard(self) -> bool:
         if self.session is None or not self.session.dirty:
             return True
         return confirm(self, "まだ出力していない修正があります",
@@ -410,7 +265,7 @@ class MainWindow(QMainWindow):
         if self.runner.busy:
             QMessageBox.information(self, "処理中です", "処理が終わってから閉じてください。")
             event.ignore()
-        elif self._may_discard():
+        elif self.may_discard():
             event.accept()
         else:
             event.ignore()
