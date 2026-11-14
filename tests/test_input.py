@@ -124,7 +124,7 @@ def test_dapi_is_not_guessed_when_ambiguous():
 @pytest.mark.parametrize("marker, location", [
     ("Islet-1", "nuclear"), ("NKX2.1", "nuclear"), ("MAP2", "fibrillar"), ("ChAT", "cytoplasmic"),
     ("Synapsin 1", "punctate"), ("Islet-1 (mouse)", "nuclear"), ("TH", "cytoplasmic"),
-    ("AT8", "fibrillar"), ("EP2456Y", "fibrillar"),
+    ("AT8", "fibrillar"), ("EP2456Y", "fibrillar"), ("6E10", "cytoplasmic"),
     ("Cathepsin D", None), ("MyNewProtein", None),
 ])
 def test_location_is_guessed_only_from_the_dictionary(marker, location):
