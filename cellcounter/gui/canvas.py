@@ -18,6 +18,8 @@ from .shortcuts import REPLACED_NAPARI_ACTIONS
 CLICK_TOLERANCE_PX = 4.0
 MARK_HALF_LENGTH = 0.30   # 核の標準直径に対する、× の腕の長さ
 MARK_SCREEN_WIDTH = 1.6   # × の線の太さ（画面上のピクセル）
+# napari の既定（nearest）だと、縮小表示で画素が間引かれてざらつき、拡大で四角く見える
+INTERPOLATION = "cubic"
 
 
 class Canvas(QWidget):
@@ -56,6 +58,7 @@ class Canvas(QWidget):
         self._outline = None
         self._marks = None
         self._hovered: int | None = None
+        self._um = 1.0
         self.marks_visible = True
 
     def current_marker(self) -> str | None:
@@ -74,6 +77,9 @@ class Canvas(QWidget):
         """画像を読み込んだとき、開き直したときに、レイヤーを作り直す。"""
         self.model.layers.clear()
         self._session, self._images, self._hovered = session, {}, None
+        # レイヤーを µm 単位で置くと、napari のスケールバーが実寸で出る
+        self._um = session.um_per_px
+        placed = {"scale": (self._um, self._um), "units": ("µm", "µm")}
         full = full_scale(session.bits)
         for row in session.table.rows:
             # ZEN で付けた色のまま重ねる（黒 → その色）
@@ -81,18 +87,19 @@ class Canvas(QWidget):
             layer = self.model.add_image(
                 session.image.planes[row.index], name=row.name, blending="additive",
                 colormap=colormap, contrast_limits=session.contrast_limits(row.index),
-                visible=False)
+                interpolation2d=INTERPOLATION, visible=False, **placed)
             layer.contrast_limits_range = (0.0, full)
             self._images[row.index] = layer
         shape = session.image.planes.shape[1:]
         self._outline = self.model.add_labels(
             np.zeros(shape, np.int32), name="選んでいる核", opacity=1.0,
-            colormap=DirectLabelColormap(color_dict={None: "white", 0: "transparent"}))
+            colormap=DirectLabelColormap(color_dict={None: "white", 0: "transparent"}), **placed)
         self._outline.contour = 2
         self._outline.show_selected_label = True
         self._outline.visible = False
         self._marks = self.model.add_vectors(np.empty((0, 2, 2)), name="×", vector_style="line",
-                                             length=1, opacity=1.0)
+                                             length=1, opacity=1.0, **placed)
+        self.model.canvas.overlays.scale_bar.visible = True
         # レイヤーを選んだ状態にしない（選ぶと、napari のレイヤー用のキーが効いてしまう）
         self.model.layers.selection.clear()
         self.model.reset_view()
@@ -146,7 +153,7 @@ class Canvas(QWidget):
         if session.labels is not None and (marker is None or marker in session.judgements):
             half = max(3.0, session.diameter_px * MARK_HALF_LENGTH)
             for nucleus in session.nuclei.values():
-                kind = session.marks.category(marker, nucleus.id)
+                kind = session.category(marker, nucleus.id)
                 if kind is None:
                     continue
                 y, x = nucleus.y, nucleus.x
@@ -162,7 +169,8 @@ class Canvas(QWidget):
     def _fit_mark_width(self) -> None:
         """拡大・縮小しても、× の線が画面上で同じ太さに見えるようにする。"""
         if self._marks is not None:
-            self._marks.edge_width = MARK_SCREEN_WIDTH / max(self.model.scene.camera.zoom, 1e-6)
+            on_screen = max(self.model.scene.camera.zoom * self._um, 1e-6)
+            self._marks.edge_width = MARK_SCREEN_WIDTH / on_screen
 
     def _on_tab(self, _index: int) -> None:
         self.refresh()
@@ -176,17 +184,21 @@ class Canvas(QWidget):
         while event.type == "mouse_move":
             yield
         if np.hypot(*(np.array(event.pos, dtype=float) - start)) <= CLICK_TOLERANCE_PX:
-            y, x = event.position[-2:]
-            self.clicked.emit(float(y), float(x))
+            y, x = self._pixel(event)
+            self.clicked.emit(y, x)
+
+    def _pixel(self, event) -> tuple[float, float]:
+        """マウスの位置（µm）を、画像の画素の位置にする。"""
+        y, x = event.position[-2:]
+        return float(y) / self._um, float(x) / self._um
 
     def _on_move(self, _model, event) -> None:
         """カーソルの下の核の輪郭を出して、どの核を選んでいるかを見分けやすくする。"""
         session = self._session
         if session is None or session.labels is None:
             return
-        y, x = event.position[-2:]
         try:
-            hovered = session.nucleus_at(y, x)
+            hovered = session.nucleus_at(*self._pixel(event))
         except ValueError:
             hovered = None
         if hovered != self._hovered:

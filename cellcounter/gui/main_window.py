@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (QFileDialog, QLabel, QMainWindow, QMessageBox, QProgressBar,
                             QScrollArea, QSplitter, QTabWidget)
 
@@ -26,8 +26,11 @@ from .shortcuts import SHORTCUTS, make_action
 from .worker import TaskRunner
 
 PROVISIONAL_BANNER = "暫定（陰性対照なし）: 固定の閾値で判定しています。陽性率は参考値です。"
+BLIND_BANNER = "目視判定モード: 自動判定を隠しています。マーカーのタブで、陽性だと思う核に × を付けてください。"
+AUTOSAVE_INTERVAL_MS = 60_000
 _MENUS = (("ファイル", ("open", "open_project", "save_project")), ("編集", ("undo", "redo")),
-          ("表示", ("next_tab", "previous_tab")), ("実行", ("judge", "export")), ("ヘルプ", ("help",)))
+          ("表示", ("next_tab", "previous_tab")),
+          ("実行", ("judge", "export", "batch", "batch_refresh")), ("ヘルプ", ("help",)))
 
 
 class MainWindow(QMainWindow):
@@ -77,6 +80,8 @@ class MainWindow(QMainWindow):
         slots = {"open": self.choose_czi, "open_project": self.choose_project,
                  "save_project": self.save_work, "judge": self.judge, "export": self.export,
                  "undo": self.undo, "redo": self.redo, "help": lambda: show_help(self),
+                 "batch": lambda: flows.batch(self),
+                 "batch_refresh": lambda: flows.batch_refresh(self),
                  "next_tab": lambda: self.canvas.step_tab(1),
                  "previous_tab": lambda: self.canvas.step_tab(-1)}
         self.actions_by_name = {entry.name: make_action(self, entry.name, slots[entry.name])
@@ -101,12 +106,16 @@ class MainWindow(QMainWindow):
         self.review_panel.contrast_changed.connect(self._on_contrast)
         self.review_panel.channel_toggled.connect(self._on_channel_toggled)
         self.review_panel.marks_toggled.connect(self.canvas.set_marks_visible)
+        self.review_panel.blind_toggled.connect(self._on_blind)
         self.output_panel.export_requested.connect(self.export)
         self.output_panel.save_requested.connect(self.save_work)
         self.canvas.clicked.connect(self._on_click)
         self.canvas.tab_changed.connect(self.refresh)
         self.show_recent()
         self.refresh()
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(lambda: flows.autosave(self))
+        self._autosave_timer.start(AUTOSAVE_INTERVAL_MS)
         if self.userdata.notice:
             self.message_label.setText(self.userdata.notice)
 
@@ -195,6 +204,10 @@ class MainWindow(QMainWindow):
         self.session.set_shown(self.canvas.current_marker(), channel_index, visible)
         self.canvas.refresh()
 
+    def _on_blind(self, active: bool) -> None:
+        self.session.set_blind(active)
+        self.refresh()
+
     def _on_setup_changed(self) -> None:
         self.stale = bool(self.session and self.session.judgements)
         self.refresh()
@@ -209,7 +222,8 @@ class MainWindow(QMainWindow):
             title += f" — {os.path.basename(session.image.path)}"
             ready = [row.marker for row in session.table.judged() if row.marker]
             self.canvas.set_markers(list(session.judgements) if session.judgements else ready)
-            self.canvas.set_banner(PROVISIONAL_BANNER if session.provisional else "")
+            banner = PROVISIONAL_BANNER if session.provisional else ""
+            self.canvas.set_banner(BLIND_BANNER if session.blind_active else banner)
             self.review_panel.refresh(session, self.canvas.current_marker())
             self.setup_panel.show_warnings(session.warnings)
         self.setWindowTitle(title)
@@ -222,6 +236,7 @@ class MainWindow(QMainWindow):
         self.panels.setTabEnabled(PANEL_OUTPUT, self.judged)
         self.output_panel.set_ready(self.judged and not busy)
         enabled = {"open": not busy, "open_project": not busy, "judge": configured and not busy,
+                   "batch": configured and not busy, "batch_refresh": not busy,
                    "export": self.judged and not busy, "save_project": self.judged and not busy,
                    "undo": self.judged and not busy and session.history.can_undo,
                    "redo": self.judged and not busy and session.history.can_redo}
@@ -246,10 +261,13 @@ class MainWindow(QMainWindow):
             self.recent_menu.addAction(path, lambda _checked=False, p=path: self.open_path(p))
 
     def may_discard(self) -> bool:
-        if self.session is None or not self.session.dirty:
-            return True
-        return confirm(self, "まだ出力していない修正があります",
-                       "出力も保存もしていない × の修正があります。破棄して続けますか？")
+        """保存していない修正を捨ててよいか。捨てると決めたら、自動保存の控えも消す。"""
+        if self.session is not None and self.session.dirty and not confirm(
+                self, "まだ出力していない修正があります",
+                "出力も保存もしていない × の修正があります。破棄して続けますか？"):
+            return False
+        self.userdata.clear_autosave()
+        return True
 
     # ---- ウィンドウのイベント -------------------------------------------------
 

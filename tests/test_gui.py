@@ -57,7 +57,8 @@ def test_buttons_and_help_come_from_the_shortcut_table(window):
     redo = [sequence.toString() for sequence in window.actions_by_name["redo"].shortcuts()]
     assert redo == ["Ctrl+Shift+Z", "Ctrl+Y"]
     for entry in SHORTCUTS:
-        assert entry.label in help_html() and entry.keys[0] in help_html()
+        assert entry.label in help_html() and all(keys in help_html() for keys in entry.keys)
+    assert "動作環境" in help_html() and "GPU" in help_html()
 
 
 def test_start_state_disables_later_steps(window):

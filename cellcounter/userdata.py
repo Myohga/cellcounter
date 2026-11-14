@@ -44,8 +44,16 @@ class UserData:
         return os.path.join(self.folder, "cellcounter.log")
 
     @property
+    def autosave_path(self) -> str:
+        return os.path.join(self.folder, "autosave.cellcounter")
+
+    @property
     def _preset_dir(self) -> str:
         return os.path.join(self.folder, "presets")
+
+    def clear_autosave(self) -> None:
+        if os.path.isfile(self.autosave_path):
+            os.remove(self.autosave_path)
 
     def save(self) -> None:
         os.makedirs(self.folder, exist_ok=True)

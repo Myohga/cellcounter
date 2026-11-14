@@ -62,6 +62,8 @@ def save_project(session: Session, path: str) -> None:
         "control": asdict(session.control) if session.control else None,
         "contrast": _keyed(session.contrast),
         "shown": session.shown,
+        "blind": {marker: _keyed(marked) for marker, marked in session.blind.items()},
+        "blind_active": session.blind_active,
         "warnings": session.warnings,
     }
     labels = io.BytesIO()
@@ -118,4 +120,6 @@ def load_project(path: str, czi_path: str | None = None,
                         for index, limits in _unkeyed(data["contrast"]).items()}
     # 0.1.0 の途中までに保存した作業ファイルには、この項目が無い
     session.shown = data.get("shown", {})
+    session.blind = {m: _unkeyed(v) for m, v in data.get("blind", {}).items()}
+    session.blind_active = data.get("blind_active", False)
     return session

@@ -81,6 +81,14 @@ def area_percentile(inp: MeasureInput, area: AreaSpec, ids: np.ndarray, settings
     return ndi.labeled_comprehension(quantity, region, ids, pick, float, np.nan)
 
 
+def _background_ratio(inp: MeasureInput, area: AreaSpec) -> np.ndarray:
+    return 1.0 + _signal(inp, area) / (inp.background + inp.pseudo)
+
+
+# 画素ごとの量。細胞の値（分位）も、画像全体の陽性面積も、同じ量を同じ閾値と比べる
+PIXEL_QUANTITIES = {"area_signal": _signal, "area_background_ratio": _background_ratio}
+
+
 def _area_signal(inp: MeasureInput, spec: LocationSpec, ids: np.ndarray,
                  settings: JudgeSettings) -> np.ndarray:
     """背景を引いた明るさの分位（陰性対照の同じ値と比べる）。"""
@@ -90,8 +98,7 @@ def _area_signal(inp: MeasureInput, spec: LocationSpec, ids: np.ndarray,
 def _area_background_ratio(inp: MeasureInput, spec: LocationSpec, ids: np.ndarray,
                            settings: JudgeSettings) -> np.ndarray:
     """局所背景に対する明るさの比の分位（固定値と比べる）。"""
-    ratio = 1.0 + _signal(inp, spec.area) / (inp.background + inp.pseudo)
-    return area_percentile(inp, spec.area, ids, settings, ratio)
+    return area_percentile(inp, spec.area, ids, settings, _background_ratio(inp, spec.area))
 
 
 def cell_brightness(inp: MeasureInput, ids: np.ndarray, settings: JudgeSettings) -> np.ndarray:
@@ -204,9 +211,14 @@ def judge_marker(row: ChannelRow, rule_name: str, inp: MeasureInput, ids: np.nda
     values = measure(row.location, rule_name, inp, ids, settings)
     detail = {"測り方": describe(row.location, rule_name, settings), **decision.detail,
               "閾値": f"{decision.threshold:.4g}"}
+    area_px = None
+    if spec.area_metric:
+        quantity = PIXEL_QUANTITIES[rule.area_measure](inp, spec.area)
+        area_px = int((quantity > decision.threshold).sum())
     judgement = Judgement(
         marker=row.marker, channel_index=row.index, location=row.location, rule=rule_name,
         threshold=decision.threshold, provisional=rule.provisional, detail=detail,
         values={int(i): float(v) for i, v in zip(ids, values)},
-        auto={int(i): is_positive(v, decision.threshold) for i, v in zip(ids, values)})
+        auto={int(i): is_positive(v, decision.threshold) for i, v in zip(ids, values)},
+        positive_area_px=area_px)
     return judgement, [f"{row.marker}: {text}" for text in decision.warnings]

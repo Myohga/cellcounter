@@ -21,6 +21,7 @@ class TaskRunner(QObject):
 
     busy_changed = Signal(bool)
     failed = Signal(str, object)
+    stage = Signal(str)
 
     def __init__(self, bar: QProgressBar, label: QLabel) -> None:
         super().__init__()
@@ -30,6 +31,7 @@ class TaskRunner(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._tick)
+        self.stage.connect(self._set_stage)
         self._worker = None
         self._stage = ""
         self._started = 0.0

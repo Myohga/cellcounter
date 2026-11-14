@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from itertools import product
@@ -27,6 +28,7 @@ class SummaryRow:
     added: int
     removed: int
     undetermined: int
+    area_per_nucleus_um2: float | None = None
 
 
 @dataclass
@@ -34,6 +36,35 @@ class CoexpressionRow:
     name: str
     cells: int
     rate: float | None
+
+
+@dataclass
+class Curve:
+    """閾値を動かしたときの陽性率（%）。control は陰性対照が無ければ None。"""
+
+    marker: str
+    chosen: float
+    thresholds: list[float]
+    sample: list[float]
+    control: list[float] | None
+
+
+@dataclass
+class Agreement:
+    """目視判定を正解としたときの、自動判定の当たり方。"""
+
+    marker: str
+    both: int
+    auto_only: int
+    human_only: int
+    neither: int
+    sensitivity: float | None
+    specificity: float | None
+    kappa: float | None
+
+    @property
+    def total(self) -> int:
+        return self.both + self.auto_only + self.human_only + self.neither
 
 
 def _percent(part: int, whole: int) -> float | None:
@@ -44,25 +75,81 @@ def counted_ids(session: Session) -> list[int]:
     return sorted(i for i, counted in session.marks.counted.items() if counted)
 
 
-def _edits(session: Session, marker: str | None, kind: str) -> int:
-    return sum(session.marks.category(marker, i) == kind for i in session.nuclei)
+def _edits(session: Session, marker: str | None) -> Counter:
+    return Counter(session.marks.category(marker, i) for i in session.nuclei)
 
 
 def summarize(session: Session) -> list[SummaryRow]:
     marks = session.marks
     counted = counted_ids(session)
     auto_counted = [i for i, auto in marks.counted_auto.items() if auto]
+    edits = _edits(session, None)
     rows = [SummaryRow(tab_name(None), len(counted), len(counted), None, len(auto_counted), None,
-                       _edits(session, None, ADDED), _edits(session, None, REMOVED), 0)]
+                       edits[ADDED], edits[REMOVED], 0)]
     for marker, judgement in session.judgements.items():
         positive = sum(marks.positive[marker][i] for i in counted)
         auto_positive = sum(marks.positive_auto[marker][i] for i in auto_counted)
+        edits = _edits(session, marker)
+        area = None
+        if judgement.positive_area_px is not None and counted:
+            area = round(judgement.positive_area_px * session.um_per_px ** 2 / len(counted), 1)
         rows.append(SummaryRow(
             name=tab_name(marker), total=len(counted), positive=positive,
             rate=_percent(positive, len(counted)), auto_positive=auto_positive,
             auto_rate=_percent(auto_positive, len(auto_counted)),
-            added=_edits(session, marker, ADDED), removed=_edits(session, marker, REMOVED),
-            undetermined=sum(not np.isfinite(judgement.values[i]) for i in counted)))
+            added=edits[ADDED], removed=edits[REMOVED],
+            undetermined=sum(not np.isfinite(judgement.values[i]) for i in counted),
+            area_per_nucleus_um2=area))
+    return rows
+
+
+def threshold_curves(session: Session, points: int = 60) -> list[Curve]:
+    """閾値を端から端まで動かしたときの陽性率。閾値をどこに置いたかの説明に使う。"""
+    curves = []
+    counted = counted_ids(session)
+    for marker, judgement in session.judgements.items():
+        sample = np.array([judgement.values[i] for i in counted], dtype=float)
+        sample = sample[np.isfinite(sample)]
+        control = None
+        if session.control:
+            control = np.array(session.control.values[marker], dtype=float)
+            control = control[np.isfinite(control)]
+        pooled = np.concatenate([sample, control if control is not None else [], [judgement.threshold]])
+        grid = np.linspace(pooled.min(), pooled.max(), points)
+
+        def rates(values: np.ndarray) -> list[float]:
+            return [round(float((values > t).mean() * 100), 2) if values.size else 0.0 for t in grid]
+
+        curves.append(Curve(marker, judgement.threshold, [round(float(t), 4) for t in grid],
+                            rates(sample), rates(control) if control is not None else None))
+    return curves
+
+
+def _ratio(part: int, whole: int) -> float | None:
+    return round(part / whole, 3) if whole else None
+
+
+def agreement(session: Session) -> list[Agreement]:
+    """目視判定モードで付けた判定と、自動判定を、数える核について突き合わせる。"""
+    rows = []
+    counted = counted_ids(session)
+    for marker, marked in session.blind.items():
+        if marker not in session.judgements or not any(marked.values()):
+            continue
+        cells = Counter((marked.get(i, False), session.marks.positive_auto[marker][i])
+                        for i in counted)
+        both, human_only = cells[True, True], cells[True, False]
+        auto_only, neither = cells[False, True], cells[False, False]
+        total = len(counted)
+        kappa = None
+        if total:
+            observed = (both + neither) / total
+            expected = ((both + human_only) * (both + auto_only)
+                        + (neither + auto_only) * (neither + human_only)) / total ** 2
+            kappa = round((observed - expected) / (1 - expected), 3) if expected < 1 else None
+        rows.append(Agreement(marker, both, auto_only, human_only, neither,
+                              _ratio(both, both + human_only), _ratio(neither, neither + auto_only),
+                              kappa))
     return rows
 
 
@@ -138,7 +225,7 @@ def settings_record(session: Session) -> list[tuple[str, str]]:
         ("元ファイル", os.path.basename(image.path)),
         ("元ファイルの場所", os.path.dirname(image.path)),
         ("シーン", str(image.scene)),
-        ("Z 投影", f"{image.z_projection}（Z {image.n_z} 枚）"),
+        ("Z の重ね方", f"{image.z_projection}（Z {image.n_z} 枚）"),
         ("µm/px", f"{session.um_per_px:.4f}"),
         ("ビット深度", str(meta.bits)),
         ("対物レンズ", meta.objective or "取得できず"),

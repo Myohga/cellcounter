@@ -27,7 +27,9 @@ SHORTCUTS = (
     Shortcut("redo", ("Ctrl+Shift+Z", "Ctrl+Y"), "やり直し", "戻した操作をやり直す"),
     Shortcut("next_tab", ("Ctrl+PgDown",), "次の組み合わせ", "右隣の組み合わせのタブへ"),
     Shortcut("previous_tab", ("Ctrl+PgUp",), "前の組み合わせ", "左隣の組み合わせのタブへ"),
-    Shortcut("help", ("F1",), "ヘルプ", "この一覧を表示する"),
+    Shortcut("batch", (), "一括処理…", "複数の .czi を、いまの設定でまとめて判定する"),
+    Shortcut("batch_refresh", (), "一括処理の集計をやり直す…", "1 枚ずつ修正したあとで、まとめを作り直す"),
+    Shortcut("help", ("F1",), "ヘルプ", "キーの一覧と動作環境を表示する"),
 )
 
 # 依頼の指定で Ctrl+Y を「やり直し」に使う。napari 標準ではこのキーが 2D/3D の切り替えなので、
@@ -51,7 +53,7 @@ def shortcut(name: str) -> Shortcut:
 
 def button_text(name: str) -> str:
     entry = shortcut(name)
-    return f"{entry.label}（{entry.keys[0]}）"
+    return f"{entry.label}（{entry.keys[0]}）" if entry.keys else entry.label
 
 
 def make_action(parent: QWidget, name: str, run: Callable[[], None]) -> QAction:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field, fields
 
 Z_PROJECTIONS = ("max", "mean", "best")
@@ -52,9 +53,10 @@ class Settings:
     judge: JudgeSettings = field(default_factory=JudgeSettings)
 
     def __post_init__(self) -> None:
-        if self.z_projection not in Z_PROJECTIONS:
-            raise ValueError(
-                f"Z 投影の指定が不正です: {self.z_projection}（{' / '.join(Z_PROJECTIONS)} のいずれか）")
+        if (self.z_projection not in Z_PROJECTIONS
+                and not re.fullmatch(r"plane:[1-9]\d*", self.z_projection)):
+            raise ValueError(f"Z 投影の指定が不正です: {self.z_projection}"
+                             f"（{' / '.join(Z_PROJECTIONS)} / plane:番号 のいずれか）")
         if not 50.0 <= self.judge.control_percentile < 100.0:
             raise ValueError(
                 f"陰性対照のパーセンタイルは 50 以上 100 未満にしてください: {self.judge.control_percentile}")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 import czifile
@@ -69,9 +70,16 @@ def to_czyx(array: np.ndarray, axes: str) -> tuple[np.ndarray, list[str]]:
 
 
 def project_z(stack: np.ndarray, mode: str) -> np.ndarray:
-    """(Z, Y, X) を 1 枚にする。"""
+    """(Z, Y, X) を 1 枚にする。mode は max / mean / best か、'plane:3'（3 枚目だけ）。"""
+    plane = re.fullmatch(r"plane:(\d+)", mode)
+    if plane:
+        number = int(plane.group(1))
+        if not 1 <= number <= stack.shape[0]:
+            raise ValueError(f"Z の {number} 枚目はありません（この画像は {stack.shape[0]} 枚）。")
+        return stack[number - 1]
     if mode not in _PROJECTIONS:
-        raise ValueError(f"Z 投影の指定が不正です: {mode}（{' / '.join(_PROJECTIONS)} のいずれか）")
+        raise ValueError(f"Z 投影の指定が不正です: {mode}"
+                         f"（{' / '.join(_PROJECTIONS)} / plane:番号 のいずれか）")
     return stack[0] if stack.shape[0] == 1 else _PROJECTIONS[mode](stack)
 
 

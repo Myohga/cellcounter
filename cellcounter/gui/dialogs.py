@@ -8,6 +8,7 @@ import os
 from qtpy.QtWidgets import QMessageBox, QWidget
 
 from .. import __version__
+from ..environment import environment_report
 from .shortcuts import MOUSE_HELP, SHORTCUTS
 
 log = logging.getLogger("cellcounter")
@@ -40,9 +41,10 @@ def help_html() -> str:
                         for left, right in rows)
         return f"<table cellpadding='3'>{cells}</table>"
 
-    keys = [(" / ".join(entry.keys), f"{entry.label}: {entry.help}") for entry in SHORTCUTS]
+    keys = [(" / ".join(entry.keys) or "（メニュー）", f"{entry.label}: {entry.help}")
+            for entry in SHORTCUTS]
     return (f"<h3>cellcounter {__version__}</h3><h4>キー</h4>{table(keys)}"
-            f"<h4>マウス</h4>{table(MOUSE_HELP)}")
+            f"<h4>マウス</h4>{table(MOUSE_HELP)}<h4>動作環境</h4>{table(environment_report())}")
 
 
 def show_help(parent: QWidget) -> None:

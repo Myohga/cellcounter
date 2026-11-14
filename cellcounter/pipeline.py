@@ -80,6 +80,7 @@ def run_judgement(session: Session, control: ControlData | None = None) -> None:
     session.judgements = {}
     session.control = control
     session.history.clear()
+    session.blind_active, session.blind = False, {}
     brightness = []
     for row in session.table.judged():
         inp = session.measure_input(row, geometry)

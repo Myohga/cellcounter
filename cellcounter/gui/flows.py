@@ -7,6 +7,7 @@ from dataclasses import asdict
 
 from qtpy.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
+from ..batch import BATCH_NAME, refresh_batch, run_batch
 from ..channels import apply_preset, build_table, preset_of
 from ..control import collect_control
 from ..czi import list_scenes, read_scene
@@ -14,6 +15,7 @@ from ..export import RESULTS_NAME, default_folder, export_results
 from ..pipeline import open_session, run_detection, run_judgement
 from ..project import EXTENSION, load_project, save_project
 from ..settings import Settings
+from .batch_dialog import BatchDialog
 from .dialogs import confirm, show_error, show_export_done
 
 PANEL_FILE, PANEL_SETUP, PANEL_REVIEW, PANEL_OUTPUT = range(4)
@@ -94,8 +96,12 @@ def open_project(window, path: str, czi_path: str | None = None) -> None:
         window.detected_with = asdict(result.settings.detection)
         if result.control:
             window.setup_panel.set_control_sources(result.control.sources)
-        window.userdata.add_recent(path)
-        window.show_recent()
+        if os.path.abspath(path) == os.path.abspath(window.userdata.autosave_path):
+            # 自動保存から戻した作業は、まだどこにも保存されていない
+            result.dirty = True
+        else:
+            window.userdata.add_recent(path)
+            window.show_recent()
         window.panels.setCurrentIndex(PANEL_REVIEW if result.judgements else PANEL_SETUP)
 
     window.runner.start("作業ファイルの読み込み", task, done)
@@ -163,6 +169,7 @@ def export(window) -> None:
 
     def done(written: str) -> None:
         window.exported = True
+        window.userdata.clear_autosave()
         window.output_panel.result.setText(f"出力しました: {written}")
         window.refresh()
         show_export_done(window, written)
@@ -185,4 +192,58 @@ def save_work(window) -> None:
         show_error(window, "作業を保存できません", error, window.userdata.log_path)
         return
     session.dirty = False
+    window.userdata.clear_autosave()
     window.message_label.setText(f"作業を保存しました: {os.path.basename(path)}")
+
+
+def autosave(window) -> None:
+    """保存していない × の修正があれば、落ちたときに戻せるよう控えを書いておく。"""
+    session = window.session
+    if window.judged and session.dirty and not window.runner.busy:
+        save_project(session, window.userdata.autosave_path)
+
+
+def batch(window) -> None:
+    """いま開いている画像の設定で、選んだ画像をまとめて判定する。"""
+    session = window.session
+    if session is None or window.runner.busy:
+        return
+    problems = session.table.problems()
+    if problems:
+        QMessageBox.warning(window, "チャンネル表を直してください", "\n".join(problems))
+        window.panels.setCurrentIndex(PANEL_SETUP)
+        return
+    dialog = BatchDialog(window, os.path.join(os.path.dirname(session.image.path), "一括処理"))
+    if not dialog.exec():
+        return
+    items, folder = dialog.items(), dialog.folder.text().strip()
+    window.setup_panel.apply_to(session.settings)
+    sources = window.setup_panel.control_sources()
+
+    def task():
+        yield f"一括処理を始めます（{len(items)} 枚）"
+        return run_batch(items, session, sources, folder, progress=window.runner.stage.emit)
+
+    def done(rows) -> None:
+        window.message_label.setText(f"一括処理が終わりました（{len(rows)} 枚）: {BATCH_NAME}")
+        show_export_done(window, folder)
+
+    window.runner.start("一括処理", task, done)
+
+
+def batch_refresh(window) -> None:
+    if window.runner.busy:
+        return
+    folder = QFileDialog.getExistingDirectory(window, "一括処理の出力フォルダを選ぶ")
+    if not folder:
+        return
+
+    def task():
+        yield "一括処理の集計をやり直しています"
+        return refresh_batch(folder)
+
+    def done(rows) -> None:
+        window.message_label.setText(f"集計をやり直しました（{len(rows)} 枚）: {BATCH_NAME}")
+        show_export_done(window, folder)
+
+    window.runner.start("集計のやり直し", task, done)

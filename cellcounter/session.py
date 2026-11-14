@@ -7,7 +7,7 @@ import numpy as np
 from .channels import ChannelRow, ChannelTable
 from .czi import LoadedImage
 from .judge import MeasureInput, is_positive, measure
-from .marks import AddNucleus, History, Marks, SetCounted, SetPositive
+from .marks import ADDED, AddNucleus, History, Marks, SetBlind, SetCounted, SetPositive
 from .markers import LOCATION_SPECS
 from .model import ControlData, Judgement, Nucleus
 from .quality import full_scale
@@ -37,7 +37,11 @@ class Session:
         self.dirty = False
         self.contrast: dict[int, tuple[float, float]] = {}
         self.shown: dict[str, list[int]] = {}
+        # 目視判定モード: 自動判定を隠して人が付けた判定（マーカー名 → 核 ID → 陽性か）
+        self.blind_active = False
+        self.blind: dict[str, dict[int, bool]] = {}
         self._backgrounds: dict[int, np.ndarray] = {}
+        self._centroids: tuple[np.ndarray, np.ndarray] | None = None
 
     @property
     def um_per_px(self) -> float:
@@ -63,7 +67,9 @@ class Session:
         self.marks = Marks()
         self.marks.set_counted({i: not n.qc_reasons for i, n in nuclei.items()})
         self.history.clear()
+        self.blind_active, self.blind = False, {}
         self._backgrounds = {}
+        self._centroids = None
 
     def background(self, channel_index: int) -> np.ndarray:
         if channel_index not in self._backgrounds:
@@ -118,10 +124,37 @@ class Session:
         under = int(self.labels[row, column])
         if under:
             return under
-        reach = max(3.0, 0.15 * self.diameter_px)
-        near = [(np.hypot(n.y - y, n.x - x), n.id) for n in self.nuclei.values()]
-        distance, nucleus_id = min(near, default=(np.inf, None))
-        return nucleus_id if distance <= reach else None
+        if self._centroids is None:
+            self._centroids = (np.array(list(self.nuclei)),
+                               np.array([(n.y, n.x) for n in self.nuclei.values()]).reshape(-1, 2))
+        ids, points = self._centroids
+        if not len(ids):
+            return None
+        distance = np.hypot(points[:, 0] - y, points[:, 1] - x)
+        nearest = int(distance.argmin())
+        return int(ids[nearest]) if distance[nearest] <= max(3.0, 0.15 * self.diameter_px) else None
+
+    def category(self, marker: str | None, nucleus_id: int) -> str | None:
+        """画面に出す × の種類。目視判定モードのマーカーのタブでは、人が付けた × だけを出す。"""
+        if self.blind_active and marker is not None:
+            marked = self.marks.counted[nucleus_id] and self.blind[marker].get(nucleus_id, False)
+            return ADDED if marked else None
+        return self.marks.category(marker, nucleus_id)
+
+    def set_blind(self, active: bool) -> None:
+        """目視判定モードの入り切り。付けた判定は、切っても残る（一致率の計算に使う）。"""
+        self.blind_active = active
+        if active:
+            for marker in self.judgements:
+                self.blind.setdefault(marker, {})
+
+    def _blind_click(self, marker: str, nucleus_id: int | None) -> str:
+        if nucleus_id is None or not self.marks.counted[nucleus_id]:
+            return "目視判定モードでは、数える核だけをクリックできます。"
+        marked = self.blind[marker].get(nucleus_id, False)
+        self.history.run([SetBlind(marker, nucleus_id, not marked, marked)], self)
+        self.dirty = True
+        return f"核 {nucleus_id} を目視で {marker} " + ("陰性" if marked else "陽性") + "にしました"
 
     def click(self, marker: str | None, y: float, x: float) -> str:
         """組み合わせのタブ（marker が None なら「DAPI のみ」）でのクリック 1 回分。"""
@@ -131,6 +164,8 @@ class Session:
             raise KeyError(f"マーカー {marker} は判定されていません。")
 
         nucleus_id = self.nucleus_at(y, x)
+        if self.blind_active and marker is not None:
+            return self._blind_click(marker, nucleus_id)
         if nucleus_id is None:
             created = self._circle_nucleus(y, x)
             nucleus_id = created.nucleus.id
@@ -198,6 +233,7 @@ class Session:
         nucleus_id = edit.nucleus.id
         self.labels[edit.pixels] = nucleus_id
         self.nuclei[nucleus_id] = edit.nucleus
+        self._centroids = None
         self.marks.counted_auto[nucleus_id] = False
         self.marks.counted[nucleus_id] = True
         for marker, judgement in self.judgements.items():
@@ -210,8 +246,11 @@ class Session:
         nucleus_id = edit.nucleus.id
         self.labels[edit.pixels] = 0
         del self.nuclei[nucleus_id]
+        self._centroids = None
         del self.marks.counted_auto[nucleus_id], self.marks.counted[nucleus_id]
         for marker, judgement in self.judgements.items():
             del judgement.values[nucleus_id], judgement.auto[nucleus_id]
             del self.marks.positive_auto[marker][nucleus_id]
             del self.marks.positive[marker][nucleus_id]
+        for marked in self.blind.values():
+            marked.pop(nucleus_id, None)

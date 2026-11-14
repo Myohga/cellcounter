@@ -29,6 +29,7 @@ class Judgement:
     detail: dict[str, str]
     values: dict[int, float] = field(default_factory=dict)
     auto: dict[int, bool] = field(default_factory=dict)
+    positive_area_px: int | None = None
 
 
 @dataclass

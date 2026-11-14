@@ -12,7 +12,7 @@ from ..marks import ADDED, AUTO, REMOVED
 from ..overlay import CAPTIONS, COLORS
 from ..quality import full_scale
 from ..session import Session
-from ..tally import summarize
+from ..tally import agreement, summarize
 from .shortcuts import button_text
 
 HEADER = ("組み合わせ", "総核数", "陽性数", "陽性率", "足した", "消した", "判定不能")
@@ -21,6 +21,9 @@ HINT_DAPI = ("「DAPI のみ」: × は数える核です。× をクリック �
 HINT_MARKER = ("「DAPI＋{marker}」: × は {marker} 陽性の核です。× をクリック → 陰性。"
                "× の無い核をクリック → 陽性。何も無い場所をクリック → 円い核を作って陽性。")
 HINT_BEFORE = "② 設定 でチャンネル表を決め、[判定] を押してください。"
+HINT_BLIND = ("目視判定モード「DAPI＋{marker}」: 自動判定は隠しています。{marker} 陽性だと思う核を"
+              "クリックして × を付けてください（もう一度クリックで外す）。"
+              "終わったらチェックを外すと、自動判定との一致率が出ます。")
 
 
 class ReviewPanel(QWidget):
@@ -29,6 +32,7 @@ class ReviewPanel(QWidget):
     contrast_changed = Signal(int, float, float)
     channel_toggled = Signal(int, bool)
     marks_toggled = Signal(bool)
+    blind_toggled = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -39,6 +43,11 @@ class ReviewPanel(QWidget):
         self.marks_check = QCheckBox("× を表示する（外すと、× の下の細胞が見えます）")
         self.marks_check.setChecked(True)
         self.marks_check.clicked.connect(self.marks_toggled)
+
+        self.blind_check = QCheckBox("目視判定モード（自動判定を隠して、自分で × を付けて比べる）")
+        self.blind_check.clicked.connect(self.blind_toggled)
+        self.agreement_label = QLabel()
+        self.agreement_label.setWordWrap(True)
 
         self.hint = QLabel(HINT_BEFORE)
         self.hint.setWordWrap(True)
@@ -72,9 +81,11 @@ class ReviewPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(self.channel_box)
         layout.addWidget(self.marks_check)
+        layout.addWidget(self.blind_check)
         layout.addWidget(self.hint)
         layout.addLayout(legend)
         layout.addWidget(self.summary, 1)
+        layout.addWidget(self.agreement_label)
         layout.addLayout(history)
         layout.addWidget(QLabel("警告"))
         layout.addWidget(self.warnings)
@@ -117,15 +128,38 @@ class ReviewPanel(QWidget):
             for index, check in self.checks.items():
                 check.setText(session.table.row(index).title)
                 check.setChecked(index in shown)
+        blind = judged and session.blind_active
+        self.blind_check.setEnabled(judged and bool(session.judgements))
+        self.blind_check.setChecked(blind)
+        self.agreement_label.setText("" if blind or not judged else _agreement_text(session))
         if not judged:
             self.hint.setText(HINT_BEFORE)
             self.summary.setRowCount(0)
             return
-        self.hint.setText(HINT_DAPI if marker is None else HINT_MARKER.format(marker=marker))
+        if marker is None:
+            self.hint.setText(HINT_DAPI)
+        else:
+            self.hint.setText((HINT_BLIND if blind else HINT_MARKER).format(marker=marker))
         rows = summarize(session)
         self.summary.setRowCount(len(rows))
         for position, row in enumerate(rows):
             rate = f"{row.rate:.1f}%" if row.rate is not None else "—"
             cells = (row.name, row.total, row.positive, rate, row.added, row.removed, row.undetermined)
+            if blind and position:
+                # 目視判定の途中で自動判定の数が見えると、判定がそちらに引っ張られる
+                cells = (row.name, row.total, *["（隠しています）"] * 5)
             for column, value in enumerate(cells):
                 self.summary.setItem(position, column, QTableWidgetItem(str(value)))
+
+
+def _agreement_text(session: Session) -> str:
+    lines = []
+    for row in agreement(session):
+        def show(value: float | None) -> str:
+            return "—" if value is None else f"{value:.2f}"
+
+        lines.append(f"目視との一致 {row.marker}: 感度 {show(row.sensitivity)}、"
+                     f"特異度 {show(row.specificity)}、κ {show(row.kappa)}"
+                     f"（目視も自動も陽性 {row.both}、自動だけ {row.auto_only}、"
+                     f"目視だけ {row.human_only}、どちらも陰性 {row.neither}）")
+    return "\n".join(lines)

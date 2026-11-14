@@ -64,7 +64,7 @@ def test_export_writes_everything_into_a_new_folder(session, tmp_path):
     assert not session.dirty
 
     book = load_workbook(os.path.join(folder, "results.xlsx"))
-    assert book.sheetnames == ["Summary", "Coexpression", "Cells", "Settings"]
+    assert book.sheetnames == ["Summary", "Coexpression", "Cells", "Settings", "Thresholds"]
     for sheet in book:
         assert sheet["A2"].value == PROVISIONAL
 

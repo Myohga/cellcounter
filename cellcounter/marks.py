@@ -73,6 +73,22 @@ class SetPositive:
         session.marks.positive[self.marker][self.nucleus_id] = self.previous
 
 
+@dataclass(frozen=True)
+class SetBlind:
+    """目視判定モードで人が付けた判定。自動判定や確定判定には触らない。"""
+
+    marker: str
+    nucleus_id: int
+    value: bool
+    previous: bool
+
+    def apply(self, session) -> None:
+        session.blind[self.marker][self.nucleus_id] = self.value
+
+    def revert(self, session) -> None:
+        session.blind[self.marker][self.nucleus_id] = self.previous
+
+
 @dataclass(frozen=True, eq=False)
 class AddNucleus:
     """手で作った円い核。測った値ごと持つので、やり直しても測り直さない。"""

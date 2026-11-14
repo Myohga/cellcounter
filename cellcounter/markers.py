@@ -27,6 +27,7 @@ class LocationSpec:
     label: str
     area: AreaSpec | None = None
     note: str = ""
+    area_metric: bool = False  # 画像全体の陽性面積も出すか（突起は細胞に割り振れないため）
 
 
 LOCATION_SPECS: dict[str, LocationSpec] = {
@@ -36,7 +37,8 @@ LOCATION_SPECS: dict[str, LocationSpec] = {
     "fibrillar": LocationSpec(
         "突起", AreaSpec(False, 2.0, 90.0),
         note="突起のマーカーは核の周り 2 µm だけで測ります。"
-             "密な培養では隣の細胞の突起を拾い、陽性に偏ることがあります。"),
+             "密な培養では隣の細胞の突起を拾い、陽性に偏ることがあります。",
+        area_metric=True),
     "punctate": LocationSpec("点状", AreaSpec(False, 3.0, 97.0, tophat_um=1.0)),
 }
 
