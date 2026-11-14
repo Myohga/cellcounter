@@ -1,5 +1,7 @@
 """画面。合成画像の作業状態を直接渡して、表示と操作のつながりを確かめる（Cellpose は使わない）。"""
 
+import os
+
 import pytest
 
 pytest.importorskip("napari")
@@ -259,3 +261,80 @@ def test_broken_userdata_is_reported_not_hidden(tmp_path):
     (folder / "user.json").write_text("{broken", encoding="utf-8")
     data = UserData(str(folder))
     assert "壊れていた" in data.notice and (folder / "user.json.broken").exists()
+
+
+def test_blind_mode_in_the_window_hides_counts_and_shows_agreement(judged):
+    window = judged
+    window.canvas.tabs.setCurrentIndex(1)
+    window.review_panel.blind_check.click()
+    assert window.session.blind_active and "目視判定モード" in window.canvas.banner.text()
+    assert window.canvas.mark_count() == 0, "自動判定の × は隠す"
+    assert _summary(window, 1, 2) == "（隠しています）"
+
+    for nucleus_id in (1, 2, 20):
+        nucleus = window.session.nuclei[nucleus_id]
+        window._on_click(nucleus.y, nucleus.x)
+    assert window.canvas.mark_count() == 3
+
+    window.review_panel.blind_check.click()
+    assert not window.session.blind_active and window.canvas.mark_count() == 3
+    text = window.review_panel.agreement_label.text()
+    assert "目視との一致 NUC" in text and "目視も自動も陽性 2、自動だけ 1、目視だけ 1" in text
+
+
+def test_autosave_keeps_unsaved_edits_and_is_cleared_when_discarded(judged, monkeypatch):
+    window = judged
+    path = window.userdata.autosave_path
+    main_window.flows.autosave(window)
+    assert not os.path.exists(path), "修正が無ければ書かない"
+
+    nucleus = window.session.nuclei[10]
+    window._on_click(nucleus.y, nucleus.x)
+    main_window.flows.autosave(window)
+    assert os.path.isfile(path)
+
+    monkeypatch.setattr(main_window, "confirm", lambda *args: True)
+    assert window.may_discard() and not os.path.exists(path)
+
+
+def test_canvas_is_placed_in_micrometers_with_a_scale_bar(judged):
+    window = judged
+    canvas = window.canvas
+    assert canvas.model.canvas.overlays.scale_bar.visible
+    assert tuple(canvas._images[0].scale) == (synth.UM_PER_PX, synth.UM_PER_PX)
+
+    class Move:
+        position = (30.0 * synth.UM_PER_PX, 60.0 * synth.UM_PER_PX)
+
+    assert canvas._pixel(Move()) == pytest.approx((30.0, 60.0))
+    assert str(canvas._images[0].interpolation2d) == "cubic"
+
+
+def test_file_panel_offers_a_single_z_plane(app):
+    from cellcounter.czi import SceneInfo
+    from cellcounter.gui.file_panel import FilePanel
+
+    panel = FilePanel()
+    panel.set_scenes("stack.czi", [SceneInfo(0, "Scene 0", {"C": 4, "Z": 12, "Y": 10, "X": 10})])
+    assert panel.z_projection() == "max" and not panel.z_plane.isEnabled()
+    panel.z.setCurrentIndex(panel.z.findData("plane"))
+    panel.z_plane.setValue(20)
+    assert panel.z_plane.isEnabled() and panel.z_projection() == "plane:12", "上限は Z の枚数"
+    panel.show_loaded("stack.czi", 0, "plane:5", "")
+    assert panel.z_projection() == "plane:5"
+
+
+def test_batch_dialog_lets_the_user_rename_conditions(app, monkeypatch, tmp_path):
+    from cellcounter.batch import BatchItem
+    from cellcounter.gui import batch_dialog
+
+    found = [BatchItem(str(tmp_path / "ctrl_1.czi"), 0, "ctrl"),
+             BatchItem(str(tmp_path / "ctrl_2.czi"), 0, "ctrl")]
+    monkeypatch.setattr(batch_dialog, "list_items", lambda paths: found)
+    dialog = batch_dialog.BatchDialog(None, str(tmp_path / "out"))
+    dialog.add([str(tmp_path)])
+    dialog.table.item(1, 0).setText("薬剤")
+    assert [(item.condition, os.path.basename(item.path)) for item in dialog.items()] == [
+        ("ctrl", "ctrl_1.czi"), ("薬剤", "ctrl_2.czi")]
+    dialog.add([str(tmp_path)])
+    assert dialog.table.rowCount() == 2, "同じ画像を二重に足さない"

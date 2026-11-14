@@ -200,6 +200,7 @@ def autosave(window) -> None:
     """保存していない × の修正があれば、落ちたときに戻せるよう控えを書いておく。"""
     session = window.session
     if window.judged and session.dirty and not window.runner.busy:
+        os.makedirs(window.userdata.folder, exist_ok=True)
         save_project(session, window.userdata.autosave_path)
 
 

@@ -186,3 +186,15 @@ def test_environment_report_lists_versions_and_gpu():
     report = dict(environment_report())
     assert {"cellcounter", "Python", "napari", "cellpose", "torch", "GPU"} <= set(report)
     assert report["GPU"].startswith(("使えます", "使えません", "PyTorch を読み込めません"))
+
+
+def test_coarse_images_are_enlarged_before_detection():
+    from cellcounter.segment import cellpose_diameter
+    from cellcounter.settings import DetectionSettings
+
+    assert cellpose_diameter(DetectionSettings(), 0.312) == (None, None), "ふつうの画像はそのまま"
+    diameter, note = cellpose_diameter(DetectionSettings(), 0.75)
+    assert diameter == pytest.approx(12.0) and "2.5 倍に拡大" in note
+    assert cellpose_diameter(DetectionSettings(nucleus_diameter_um=6.0), 0.75) == (8.0, None)
+    with pytest.raises(ValueError, match="µm/px が分からない"):
+        cellpose_diameter(DetectionSettings(nucleus_diameter_um=6.0), None)
