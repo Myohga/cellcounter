@@ -181,3 +181,15 @@ def test_display_clip_and_quality():
     bright = assess(np.full((10, 10), 4095, np.uint16), 12)
     assert bright.saturated_fraction == 1.0 and "飽和" in quality_warning("MAP2", bright)
     assert quality_warning("MAP2", assess(np.full((10, 10), 2000, np.uint16), 12)) is None
+
+
+def test_launch_bat_is_readable_by_cmd():
+    """cmd.exe は .bat を日本語 Windows の文字コードで読む。UTF-8 の日本語や LF だけの改行があると、
+
+    行の途中から別のコマンドとして実行されて壊れる（「'onda' は…認識されていません」）。
+    """
+    import pathlib
+
+    data = (pathlib.Path(__file__).parent.parent / "launch.bat").read_bytes()
+    assert all(byte < 128 for byte in data)
+    assert data.count(b"\n") == data.count(b"\r\n") > 0
