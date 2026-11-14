@@ -49,7 +49,7 @@ _LIBRARY = {
     "cytoplasmic": """chat th tyrosinehydroxylase gfap s100b s100 iba1 aif1 gad67 gad65
         calbindin calretinin parvalbumin somatostatin sst pgp95 uchl1 serotonin 5ht dbh
         vip nestin vimentin cleavedcaspase3 caspase3 aqp4 cnpase""",
-    "fibrillar": """map2 tuj1 betaiiitubulin biiitubulin tubb3 tau ptau at8 nfh nfm nfl
+    "fibrillar": """map2 tuj1 betaiiitubulin biiitubulin tubb3 tau ptau at8 ep2456y nfh nfm nfl
         neurofilament smi32 smi31 dcx doublecortin gap43 mbp peripherin phalloidin
         factin""",
     "punctate": """synapsin synapsin1 syn1 synaptophysin syp vglut1 vglut2 slc17a7 slc17a6
