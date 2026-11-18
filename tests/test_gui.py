@@ -8,7 +8,8 @@ pytest.importorskip("napari")
 
 from napari.qt import get_qapp  # noqa: E402
 from napari.settings import get_settings  # noqa: E402
-from qtpy.QtCore import QMimeData, QUrl  # noqa: E402
+from qtpy.QtCore import QMimeData, Qt, QUrl  # noqa: E402
+from qtpy.QtTest import QTest  # noqa: E402
 
 import synth  # noqa: E402
 from cellcounter.channels import build_table  # noqa: E402
@@ -51,6 +52,18 @@ def test_shortcuts_do_not_collide_with_napari():
     napari = {str(keys): action for action, bindings in get_settings().shortcuts.shortcuts.items()
               for keys in bindings if action not in REPLACED_NAPARI_ACTIONS}
     assert not set(ours) & set(napari)
+
+
+def test_napari_keys_that_move_dimensions_are_switched_off(window):
+    from cellcounter.gui.shortcuts import UNUSED_NAPARI_ACTIONS
+
+    from napari.utils.action_manager import action_manager
+
+    assert all(not action_manager._shortcuts.get(action) for action in UNUSED_NAPARI_ACTIONS)
+    assert list(window.canvas.model.mouse_wheel_callbacks) == []
+    before = window.canvas.model.dims.point
+    QTest.keyClick(window.canvas.view.canvas.native, Qt.Key.Key_Right)
+    assert window.canvas.model.dims.point == before
 
 
 def test_buttons_and_help_come_from_the_shortcut_table(window):
@@ -308,6 +321,62 @@ def test_canvas_is_placed_in_micrometers_with_a_scale_bar(judged):
 
     assert canvas._pixel(Move()) == pytest.approx((30.0, 60.0))
     assert str(canvas._images[0].interpolation2d) == "cubic"
+
+
+def test_hovering_works_with_many_nuclei_and_one_cut_by_the_edge(window):
+    """核が 256 個以上あり、端で切れた核の × が画像からはみ出しても、輪郭を出せる。
+
+    × がはみ出すと napari が非表示の輪郭レイヤーを 8 bit の仮の中身に差し替えるため、
+    そのまま 256 以上の核を選ぶと OverflowError になっていた（実画像で核 2083 個のとき）。
+    """
+    import numpy as np
+
+    from cellcounter.gui.canvas import MARK_HALF_LENGTH
+
+    labels = synth.grid_labels(17, 17)
+    edge_id = int(labels.max()) + 1
+    ys, xs = np.mgrid[0:synth.RADIUS + 1, 300 - synth.RADIUS:300 + synth.RADIUS + 1]
+    inside = ys ** 2 + (xs - 300) ** 2 <= synth.RADIUS ** 2
+    labels[ys[inside], xs[inside]] = edge_id
+    planes = [synth.dapi_plane(labels, 1), synth.marker_plane(labels, {1, 2}, "nucleus", 2)]
+    session = synth.build_session(labels, planes, [(1, "NUC", "nuclear")])
+    assert len(session.nuclei) > 256
+    window.show_session(session)
+    canvas = window.canvas
+    arm = max(3.0, session.diameter_px * MARK_HALF_LENGTH)
+    assert session.nuclei[edge_id].y - arm < -0.5, "× が画像の上にはみ出している"
+
+    class Move:
+        def __init__(self, nucleus_id):
+            nucleus = session.nuclei[nucleus_id]
+            self.position = (nucleus.y * canvas._um, nucleus.x * canvas._um)
+
+    for nucleus_id in (280, edge_id, 5):
+        canvas._on_move(None, Move(nucleus_id))
+        assert canvas._outline.visible and canvas._outline.selected_label == nucleus_id
+
+    class Outside:
+        position = (15.0 * canvas._um, 15.0 * canvas._um)
+
+    canvas._on_move(None, Outside())
+    assert not canvas._outline.visible
+    canvas._on_move(None, Move(289))
+    assert canvas._outline.visible and canvas._outline.selected_label == 289
+
+
+def test_hovering_works_after_napari_moved_its_slider_position(window):
+    """← → キーや Ctrl+ホイールで napari の「スライダーの位置」が動いたあとでも、輪郭を出せる。"""
+    session = synth.two_marker_session(17, 17, {1, 2, 3}, {4, 5})
+    window.show_session(session)
+    canvas = window.canvas
+    canvas.model.dims._increment_dims_right()  # napari が → キーで呼ぶ処理
+
+    class Move:
+        nucleus = session.nuclei[280]
+        position = (nucleus.y * canvas._um, nucleus.x * canvas._um)
+
+    canvas._on_move(None, Move())
+    assert canvas._outline.visible and canvas._outline.selected_label == 280
 
 
 def test_file_panel_offers_a_single_z_plane(app):

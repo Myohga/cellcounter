@@ -13,7 +13,7 @@ from qtpy.QtWidgets import QLabel, QTabBar, QVBoxLayout, QWidget
 from ..overlay import COLORS, rgb_of
 from ..quality import full_scale
 from ..session import Session, tab_name
-from .shortcuts import REPLACED_NAPARI_ACTIONS
+from .shortcuts import REPLACED_NAPARI_ACTIONS, UNUSED_NAPARI_ACTIONS
 
 CLICK_TOLERANCE_PX = 4.0
 MARK_HALF_LENGTH = 0.30   # 核の標準直径に対する、× の腕の長さ
@@ -34,8 +34,10 @@ class Canvas(QWidget):
         self.view = QtViewer(self.model)
         # ドロップは親のウィンドウで受ける（napari に任せると .czi を読めずエラーになる）
         self.view.setAcceptDrops(False)
-        for action in REPLACED_NAPARI_ACTIONS:
+        for action in (*REPLACED_NAPARI_ACTIONS, *UNUSED_NAPARI_ACTIONS):
             action_manager.unbind_shortcut(action)
+        # Ctrl+ホイール（次元を動かす）と Alt+ホイール（レイヤーを選ぶ）も、この画面では使わない
+        self.model.mouse_wheel_callbacks.clear()
 
         self.banner = QLabel()
         self.banner.setStyleSheet("color: #c00000; font-weight: bold; padding: 2px;")
@@ -203,5 +205,19 @@ class Canvas(QWidget):
             hovered = None
         if hovered != self._hovered:
             self._hovered = hovered
-            self._outline.selected_label = hovered or 0
-            self._outline.visible = hovered is not None
+            self._show_outline(hovered)
+
+    def _show_outline(self, nucleus_id: int | None) -> None:
+        """核を 1 つ選んで輪郭を出す。None なら消す。
+
+        napari は、非表示のレイヤーの中身を 1×1・8 bit の仮のものに差し替えることがある
+        （× が画像の端からはみ出して、表示範囲が変わったときなど）。そのまま 256 以上の
+        核を選ぶと OverflowError になるので、必ず表示してから選ぶ。
+        """
+        outline = self._outline
+        if nucleus_id is None:
+            outline.visible = False
+            return
+        if not outline.visible:
+            outline.visible = True
+        outline.selected_label = nucleus_id

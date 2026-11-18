@@ -35,6 +35,11 @@ SHORTCUTS = (
 # 依頼の指定で Ctrl+Y を「やり直し」に使う。napari 標準ではこのキーが 2D/3D の切り替えなので、
 # その割り当てを外す（この画面は 2D でしか使わない）。
 REPLACED_NAPARI_ACTIONS = ("napari:toggle_ndisplay",)
+# この画面は 2D の画像 1 枚しか出さないので、napari 標準の「次元や軸を動かす」キーは外す
+# （← → は見た目が変わらないまま全レイヤーを読み直させ、Ctrl+E / Ctrl+T は画像の向きを変えてしまう）。
+UNUSED_NAPARI_ACTIONS = ("napari:increment_dims_left", "napari:increment_dims_right",
+                         "napari:focus_axes_up", "napari:focus_axes_down",
+                         "napari:roll_axes", "napari:transpose_axes", "napari:toggle_grid")
 
 MOUSE_HELP = (
     ("クリック（DAPI のみ）", "× のある核 → 数えない ／ × の無い核 → 数える ／ 何も無い場所 → 円い核を作る"),
