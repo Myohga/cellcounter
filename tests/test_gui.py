@@ -10,12 +10,13 @@ from napari.qt import get_qapp  # noqa: E402
 from napari.settings import get_settings  # noqa: E402
 from qtpy.QtCore import QMimeData, Qt, QUrl  # noqa: E402
 from qtpy.QtTest import QTest  # noqa: E402
+from qtpy.QtWidgets import QWidget  # noqa: E402
 
 import synth  # noqa: E402
 from cellcounter.channels import build_table  # noqa: E402
 from cellcounter.gui import main_window  # noqa: E402
 from cellcounter.gui.channel_table import ChannelTableWidget  # noqa: E402
-from cellcounter.gui.dialogs import help_html  # noqa: E402
+from cellcounter.gui.dialogs import HelpDialog, help_html  # noqa: E402
 from cellcounter.gui.main_window import PANEL_OUTPUT, PANEL_REVIEW, MainWindow  # noqa: E402
 from cellcounter.gui.shortcuts import REPLACED_NAPARI_ACTIONS, SHORTCUTS, button_text  # noqa: E402
 from cellcounter.userdata import RECENT_LIMIT, UserData  # noqa: E402
@@ -74,6 +75,28 @@ def test_buttons_and_help_come_from_the_shortcut_table(window):
     for entry in SHORTCUTS:
         assert entry.label in help_html() and all(keys in help_html() for keys in entry.keys)
     assert "動作環境" in help_html() and "GPU" in help_html()
+
+
+def test_help_fits_the_screen_and_can_scroll_and_zoom(app):
+    # 親を MainWindow にして表示すると、napari の描画（OpenGL）があとのテストで壊れるので、ただの QWidget にする
+    parent = QWidget()
+    dialog = HelpDialog(parent)
+    screen = parent.screen().availableGeometry()
+    assert dialog.width() <= screen.width() and dialog.height() <= screen.height() * 0.8 + 1
+    assert "動作環境" in dialog.text.toPlainText()
+    dialog.show()
+    dialog.activateWindow()
+    assert QTest.qWaitForWindowActive(dialog)
+    size = dialog.text.font().pointSizeF()
+    dialog.zoom_out.click()
+    assert dialog.text.font().pointSizeF() < size
+    QTest.keyClick(dialog, Qt.Key.Key_Equal, Qt.KeyboardModifier.ControlModifier)
+    assert dialog.text.font().pointSizeF() == size
+    for _ in range(20):
+        dialog.zoom_in.click()
+    app.processEvents()
+    assert dialog.text.verticalScrollBar().maximum() > 0   # 画面に収まらない分はスクロールで見る
+    dialog.close()
 
 
 def test_start_state_disables_later_steps(window):
