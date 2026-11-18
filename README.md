@@ -5,25 +5,149 @@
 
 0.1.0 は判定法の検証が済むまでの開発版です。
 
-## 準備
+## 導入（Python の入っていない PC から）
 
-Python 3.11 または 3.12 を使います。
+Windows 10 / 11（64 ビット）の PC を想定しています。
+始める前に、インターネットにつながっていることと、C ドライブに 10 GB 以上（GPU を使うときは 15 GB 以上）の空きがあることを確かめてください。
+管理者の権限は、GPU のドライバーを入れるとき以外は要りません。
+
+次の 1〜6 を、PC ごとに 1 回だけ行います。全部で 30 分〜1 時間ほどかかります（多くはダウンロードの待ち時間です）。
+
+1. Miniforge（Python と conda）を入れる
+2. cellcounter 用の環境を作る
+3. cellcounter 本体を取ってくる（git clone）
+4. GPU 版の PyTorch を入れる（NVIDIA の GPU がある PC だけ）
+5. cellcounter が使う部品を入れる
+6. 起動して確かめる
+
+### 1. Miniforge を入れる
+
+Miniforge は、Python と conda（Python の環境をソフトごとに分けて管理する道具）をまとめて入れるソフトです。無償で使えます。
+
+1. 次の URL から、Windows 用のインストーラー（`Miniforge3-Windows-x86_64.exe`）をダウンロードします。
+   https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Windows-x86_64.exe
+2. ダウンロードしたファイルを開きます。「Windows によって PC が保護されました」と出たときは、「詳細情報」→ [実行] を押します。
+3. 選択肢はすべて既定のまま（「Just Me」のまま、PATH への追加もしない）、[Next]・[I Agree]・[Install]・[Finish] と進めます。
+   ただし、Windows のユーザー名に日本語や空白が入っているときは、インストール先を選ぶ画面（Choose Install Location）で
+   `C:\miniforge3` に変えてください。そのままだと、あとの手順で失敗することがあります。
+
+Anaconda や Miniconda がすでに入っている PC では、それを使っても構いません。
+その場合は手順 1 を飛ばし、以下の「Miniforge Prompt」を「Anaconda Prompt」に読み替えてください。
+
+### 2. cellcounter 用の環境を作る
+
+スタートメニューで「Miniforge Prompt」を探して開きます。黒い画面が開き、行頭に `(base)` と出ます。
+次のコマンドを 1 行ずつ貼り付けて、Enter を押します。2 行目は数分かかります。
 
 ```bat
-conda create -n cellcounter python=3.11
+conda init cmd.exe
+conda create -n cellcounter python=3.12 git -y
 conda activate cellcounter
-pip install -e .[test]
 ```
 
-GPU を使うときは、PyTorch を CUDA 版に入れ直します（RTX 5060 は cu128 以降）。
+- 1 行目は、`launch.bat` から conda を使えるようにする設定です。
+  あとに「close and re-open your current shell」と出ますが、閉じずにそのまま続けて構いません。
+- 2 行目で、Python と git（手順 3 で cellcounter 本体を取ってくる道具）を入れます。
+  Python は 3.12 を使ってください。3.11 以前では、.czi を読む部品（czifile）が入りません。
+- 3 行目のあと、行頭が `(base)` から `(cellcounter)` に変わります。手順 3〜5 は、この画面のまま続けます。
+  画面を閉じてしまったときは、Miniforge Prompt を開き直し、`conda activate cellcounter` を実行してから続けます。
+
+### 3. cellcounter 本体を取ってくる
+
+手順 2 の画面のまま、次を実行します。
 
 ```bat
-pip install torch --index-url https://download.pytorch.org/whl/cu128
+git clone https://github.com/Myohga/cellcounter.git C:\cellcounter
+```
+
+`C:\cellcounter` というフォルダができ、中に `launch.bat` などが入ります。
+
+- 以下は `C:\cellcounter` に置いたものとして説明します。別の場所に置くときは、日本語や空白を含まない場所を選び、
+  コマンドの `C:\cellcounter` を読み替えてください。
+- `C:\cellcounter` の中のファイルは書き換えないでください。あとで更新（`git pull`）できなくなります。
+
+### 4. GPU 版の PyTorch を入れる（NVIDIA の GPU がある PC だけ）
+
+核の検出（Cellpose）は、GPU を使うと速く終わります。GPU が無くても動きますが、1 枚に 10 分以上かかります。
+NVIDIA の GPU が無い PC では、この手順を飛ばしてください。
+
+1. NVIDIA のドライバーを最新にします（NVIDIA のサイトか NVIDIA App から）。
+2. 手順 2 の画面で `nvidia-smi` と入力し、表の右上の「CUDA Version」が 12.8 以上であることを確かめます。
+3. 次のコマンドで、GPU 版の PyTorch を入れます。約 3 GB をダウンロードします。
+
+```bat
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+```
+
+- この手順は、必ず手順 5 より前に行ってください。先に手順 5 を済ませると CPU 版の PyTorch が入り、
+  上のコマンドでは入れ替わりません（入れ替え方は「うまくいかないとき」にあります）。
+- RTX 50 シリーズ（RTX 5060 など）は、cu128 以降の版でないと動きません。
+
+### 5. cellcounter が使う部品を入れる
+
+手順 2 の画面のまま、次を実行します。
+
+```bat
+cd /d C:\cellcounter
+pip install -e .
+```
+
+napari・Cellpose・PyTorch などをダウンロードするため、10〜30 分ほどかかります。
+最後に `Successfully installed` で始まる行が出れば完了です。赤い `ERROR` が出たときは、「うまくいかないとき」を見てください。
+
+このあとは `C:\cellcounter` を動かしたり、名前を変えたりしないでください。動かしたときは、手順 5 をやり直します。
+
+### 6. 起動して確かめる
+
+1. `C:\cellcounter\launch.bat` をダブルクリックします。黒い画面が開き、しばらくすると cellcounter の画面が出ます。
+   黒い画面は、cellcounter を使っているあいだ閉じないでください（閉じると cellcounter も終わります）。
+2. F1 を押し、ヘルプの下に出る動作環境を確かめます。GPU 版を入れた PC では、「GPU」の欄が「使えます（GPU の名前）」になります。
+3. 初めて [判定] を押したときだけ、核の検出に使う Cellpose のモデル（約 1.2 GB）をダウンロードします。
+   インターネットにつながった状態で、終わるまで待ってください。進み具合は黒い画面に出ます。
+   モデルは `%USERPROFILE%\.cellpose\models` に保存され、2 回目からはダウンロードしません。
+
+`launch.bat` を右クリック →「送る」→「デスクトップ (ショートカットを作成)」で、デスクトップから開けるようにしておくと便利です
+（Windows 11 では、右クリックのあと「その他のオプションを確認」を押すと「送る」が出ます）。
+
+### 更新するとき
+
+Miniforge Prompt で次を実行します。
+
+```bat
+conda activate cellcounter
+cd /d C:\cellcounter
+git pull
+pip install -e .
+```
+
+`git pull` で新しい版を取ってきて、`pip install -e .` で増えた部品を入れます。
+結果（.czi と同じフォルダの `<ファイル名>_cellcounter`）と設定（`%APPDATA%\cellcounter`）は別の場所にあるので、更新しても消えません。
+
+### うまくいかないとき
+
+| 症状 | 対処 |
+|---|---|
+| `launch.bat` を開くと `Python was not found`、または「'python' は、内部コマンドまたは外部コマンド…として認識されていません」と出る | 手順 2 の `conda init cmd.exe` が済んでいません。Miniforge Prompt で実行してから、`launch.bat` を開き直してください |
+| `launch.bat` を開くと `EnvironmentNameNotFound` と出る | 環境ができていません。手順 2 からやり直してください（`C:\cellcounter` がすでにあれば、手順 3 は飛ばします） |
+| `git` が「内部コマンドまたは外部コマンド…として認識されていません」と出る | 行頭が `(cellcounter)` になっていません。`conda activate cellcounter` を実行してから、もう一度実行してください。それでも出るときは、`conda install git -y` で git を入れます |
+| `git clone` で `already exists and is not an empty directory` と出る | `C:\cellcounter` がすでにあります。前に取ってきたものなら、手順 3 は済んでいるので、手順 4 に進んでください |
+| `launch.bat` を開くと `ModuleNotFoundError` と出る | 部品が入っていません。Miniforge Prompt で `conda activate cellcounter` を実行してから、手順 5 をやり直してください |
+| `pip install -e .` で `No matching distribution found for czifile` と出る | 環境の Python が 3.12 ではありません。Miniforge Prompt を開き直し、`conda remove -n cellcounter --all -y` で環境を消してから、手順 2 からやり直してください（手順 3 は飛ばします） |
+| `pip install` で `Long Path` を含むエラーが出る | エラー文にある https://pip.pypa.io/warnings/enable-long-paths の手順で、長いパスを有効にしてください（管理者の権限が要ります） |
+| GPU があるのに、F1 の「GPU」が「使えません」になる | `nvidia-smi` の CUDA Version が 12.8 未満なら、ドライバーを更新します。12.8 以上なら CPU 版の PyTorch が入っているので、下のコマンドで入れ替えてください |
+| 初めての判定がなかなか終わらない | Cellpose のモデルをダウンロードしています。黒い画面で進み具合を確かめてください |
+
+CPU 版の PyTorch を GPU 版に入れ替える（Miniforge Prompt で）:
+
+```bat
+conda activate cellcounter
+pip uninstall -y torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ## 使い方（画面）
 
-`launch.bat` をダブルクリックするか、次のコマンドで画面を開きます。
+`launch.bat` をダブルクリックするか、Miniforge Prompt で `conda activate cellcounter` を実行したあと、次のコマンドで画面を開きます。
 
 ```bat
 python -m cellcounter
@@ -53,6 +177,8 @@ python -m cellcounter
 - エラーの詳細は `%APPDATA%\cellcounter\cellcounter.log` に残ります。
 
 ## 使い方（コマンドライン）
+
+コマンドは、Miniforge Prompt で `conda activate cellcounter` を実行してから使います。
 
 シーンとチャンネルを確認する:
 
@@ -157,7 +283,10 @@ python -m cellcounter batch "D:\data\実験フォルダ" --marker "AF488=MAP2" -
 
 ## テスト
 
+Miniforge Prompt で `conda activate cellcounter` と `cd /d C:\cellcounter` を実行してから、次を実行します。
+
 ```bat
+pip install -e ".[test]"
 python -m pytest
 ```
 
