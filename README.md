@@ -11,7 +11,40 @@ Windows 10 / 11（64 ビット）の PC を想定しています。
 始める前に、インターネットにつながっていることと、C ドライブに 10 GB 以上（GPU を使うときは 15 GB 以上）の空きがあることを確かめてください。
 管理者の権限は、GPU のドライバーを入れるとき以外は要りません。
 
-次の 1〜6 を、PC ごとに 1 回だけ行います。全部で 30 分〜1 時間ほどかかります（多くはダウンロードの待ち時間です）。
+入れ方は 2 通りあります。どちらも PC ごとに 1 回だけ行い、全部で 30 分〜1 時間ほどかかります（多くはダウンロードの待ち時間です）。
+
+- **install.bat で入れる（おすすめ）**: ファイルを 1 つダウンロードしてダブルクリックするだけです。下の手順 1〜5 を自動で行います。
+- **手で入れる**: 下の手順 1〜5 を、コマンドを打って行います。install.bat が途中で止まって直せないときなどに使います。
+
+どちらで入れたときも、最後に手順 6 で起動を確かめます。
+
+### install.bat で入れる（おすすめ）
+
+1. NVIDIA の GPU がある PC では、先に NVIDIA のドライバーを最新にします（NVIDIA のサイトか NVIDIA App から）。
+2. 次のページを開き、右上の「Download raw file」（下向き矢印のボタン）を押して、`install.bat` をダウンロードします。
+   https://github.com/Myohga/cellcounter/blob/main/install.bat
+   ブラウザーに「一般的にダウンロードされていません」などと出たときは、「…」→「保存」（または「保持する」）を選びます。
+3. ダウンロードした `install.bat` をダブルクリックします。「Windows によって PC が保護されました」と出たときは、「詳細情報」→ [実行] を押します。
+4. 黒い画面が開き、`[1/6]` から `[6/6]` まで順に進みます。途中で何かを選ぶ必要はありません。
+   最後に `Done.` と出たら、何かキーを押して画面を閉じます。`FAILED` と出て止まったときは、「うまくいかないとき」を見てください。
+5. 手順 6 に進みます。デスクトップに「cellcounter」のショートカットができているので、`launch.bat` の代わりにそれを使えます。
+
+install.bat が行うこと:
+
+- Miniforge が無ければ、ダウンロードして `%USERPROFILE%\miniforge3` に入れます。
+  Windows のユーザー名に日本語や空白が入っているときは、`C:\miniforge3` に入れます。
+  Miniforge・Anaconda・Miniconda がすでに入っていれば、それを使います。
+- `conda init cmd.exe` を実行し、`cellcounter` 環境（Python 3.12 と git）を作ります。
+- cellcounter 本体を `C:\cellcounter` に取ってきます（git clone）。
+- NVIDIA の GPU があれば、GPU 版の PyTorch を入れます。CPU 版が入っていれば入れ替えます。
+- cellcounter が使う部品を入れ（`pip install -e .`）、デスクトップにショートカットを作ります。
+
+もう一度実行しても大丈夫です。済んでいる手順は飛ばします。
+手で入れた PC でも、`C:\cellcounter\install.bat` をダブルクリックすると、足りないものだけを入れます。
+
+### 手で入れる
+
+次の 1〜6 を順に行います。
 
 1. Miniforge（Python と conda）を入れる
 2. cellcounter 用の環境を作る
@@ -111,7 +144,10 @@ napari・Cellpose・PyTorch などをダウンロードするため、10〜30 �
 
 ### 更新するとき
 
-Miniforge Prompt で次を実行します。
+`C:\cellcounter\update.bat` をダブルクリックします。新しい版を取ってきて（`git pull`）、増えた部品を入れます（`pip install -e .`）。
+最後に `Done.` と出たら、何かキーを押して画面を閉じます。
+
+`update.bat` が無い古い版では、1 回だけ、Miniforge Prompt で次を実行して更新します。そのあとは `update.bat` を使えます。
 
 ```bat
 conda activate cellcounter
@@ -120,10 +156,22 @@ git pull
 pip install -e .
 ```
 
-`git pull` で新しい版を取ってきて、`pip install -e .` で増えた部品を入れます。
 結果（.czi と同じフォルダの `<ファイル名>_cellcounter`）と設定（`%APPDATA%\cellcounter`）は別の場所にあるので、更新しても消えません。
 
 ### うまくいかないとき
+
+install.bat・update.bat が止まったとき:
+
+| 症状 | 対処 |
+|---|---|
+| `FAILED: could not download and install Miniforge` | インターネットにつながっているか確かめます。大学や会社のネットワークでダウンロードが止められているときは、手順 1 のとおり Miniforge を手で入れてから、install.bat を実行し直します |
+| `FAILED: could not create the conda environment`、`could not install the GPU version of PyTorch`、`could not install the Python packages with pip` | 多くは、ダウンロードの途中で通信が切れたためです。install.bat を実行し直してください（済んだ手順は飛ばします）。何度やっても止まるときは、上に出ている赤い `ERROR` を下の表で探します |
+| `FAILED: could not use Python 3.12 or later in the environment` | 前に作った環境の Python が古いです。Miniforge Prompt で `conda remove -n cellcounter --all -y` を実行して環境を消してから、install.bat を実行し直します |
+| `FAILED: could not get cellcounter with git clone` | `C:\cellcounter` に別のものが入っているか、通信が切れました。`C:\cellcounter` があれば別の名前に変えてから、install.bat を実行し直します |
+| install.bat の最後に `WARNING: An NVIDIA GPU was found, but PyTorch cannot use it` と出る | NVIDIA のドライバーが古いです。ドライバーを最新にして PC を再起動し、install.bat を実行し直します |
+| update.bat で `FAILED: git pull` と出る | インターネットにつながっているか確かめます。`would be overwritten` と出ているときは、`C:\cellcounter` の中のファイルが書き換えられています。Miniforge Prompt で `cd /d C:\cellcounter` と `git restore .` を実行して元に戻してから（書き換えた内容は消えます）、update.bat を実行し直します |
+
+そのほか:
 
 | 症状 | 対処 |
 |---|---|
@@ -134,7 +182,7 @@ pip install -e .
 | `launch.bat` を開くと `ModuleNotFoundError` と出る | 部品が入っていません。Miniforge Prompt で `conda activate cellcounter` を実行してから、手順 5 をやり直してください |
 | `pip install -e .` で `No matching distribution found for czifile` と出る | 環境の Python が 3.12 ではありません。Miniforge Prompt を開き直し、`conda remove -n cellcounter --all -y` で環境を消してから、手順 2 からやり直してください（手順 3 は飛ばします） |
 | `pip install` で `Long Path` を含むエラーが出る | エラー文にある https://pip.pypa.io/warnings/enable-long-paths の手順で、長いパスを有効にしてください（管理者の権限が要ります） |
-| GPU があるのに、F1 の「GPU」が「使えません」になる | `nvidia-smi` の CUDA Version が 12.8 未満なら、ドライバーを更新します。12.8 以上なら CPU 版の PyTorch が入っているので、下のコマンドで入れ替えてください |
+| GPU があるのに、F1 の「GPU」が「使えません」になる | `nvidia-smi` の CUDA Version が 12.8 未満なら、ドライバーを更新します。12.8 以上なら CPU 版の PyTorch が入っているので、`C:\cellcounter\install.bat` を実行し直すか、下のコマンドで入れ替えてください |
 | 初めての判定がなかなか終わらない | Cellpose のモデルをダウンロードしています。黒い画面で進み具合を確かめてください |
 
 CPU 版の PyTorch を GPU 版に入れ替える（Miniforge Prompt で）:
