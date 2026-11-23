@@ -30,6 +30,8 @@ from .worker import TaskRunner
 PROVISIONAL_BANNER = "暫定（陰性対照なし）: 固定の閾値で判定しています。陽性率は参考値です。"
 BLIND_BANNER = "目視判定モード: 自動判定を隠しています。マーカーのタブで、陽性だと思う核に × を付けてください。"
 AUTOSAVE_INTERVAL_MS = 60_000
+MIN_CANVAS_WIDTH = 480  # 右のパネルを広げても、画像の側はこれより狭くしない
+PANEL_FRAME_PX = 12     # タブの枠の分
 _MENUS = (("ファイル", ("open", "open_project", "save_project")), ("編集", ("undo", "redo")),
           ("表示", ("next_tab", "previous_tab")),
           ("実行", ("judge", "export", "batch", "batch_refresh")), ("操作", ("dictionary",)),
@@ -62,13 +64,13 @@ class MainWindow(QMainWindow):
             scroll.setWidgetResizable(True)
             scroll.setWidget(panel)
             self.panels.addTab(scroll, title)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.canvas)
-        splitter.addWidget(self.panels)
-        self.setCentralWidget(splitter)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.canvas)
+        self.splitter.addWidget(self.panels)
+        self.setCentralWidget(self.splitter)
         self.setAcceptDrops(True)
         self.resize(1500, 900)
-        splitter.setSizes([960, 540])
+        self.splitter.setSizes([960, 540])
 
         self.stage_label, self.message_label, task_label = QLabel(), QLabel(), QLabel()
         bar = QProgressBar()
@@ -182,6 +184,7 @@ class MainWindow(QMainWindow):
             f"{session.bits} bit ／ {image.meta.objective or '対物は取得できず'}")
         self.setup_panel.set_table(session.table)
         self.setup_panel.show_settings(session.settings)
+        self.fit_panels()
         self.review_panel.show_session(session)
         self.output_panel.folder.setText(default_folder(image.path))
         self.output_panel.name.clear()
@@ -239,6 +242,7 @@ class MainWindow(QMainWindow):
 
     def _on_setup_changed(self) -> None:
         self.stale = bool(self.session and (self.session.judgements or self.session.imv_channels))
+        self.fit_panels()
         self.refresh()
 
     # ---- 表示の更新 ---------------------------------------------------------
@@ -286,6 +290,20 @@ class MainWindow(QMainWindow):
                  "②設定 ✓" if configured else "②設定", review,
                  "④出力済み ✓" if self.exported else "④未出力")
         self.stage_label.setText(" → ".join(steps))
+
+    def fit_panels(self) -> None:
+        """② のチャンネル表が横にはみ出さないよう、右のパネルを広げる（その分、画像の側を狭める）。
+
+        文字が大きい PC（Windows の日本語フォントや表示の拡大）では、既定の幅に表が収まらない。
+        """
+        scroll = self.panels.widget(PANEL_SETUP)
+        needed = (self.setup_panel.minimumSizeHint().width() + 2 * scroll.frameWidth()
+                  + scroll.verticalScrollBar().sizeHint().width() + PANEL_FRAME_PX)
+        image, panels = self.splitter.sizes()
+        if panels >= needed:
+            return
+        moved = min(needed - panels, max(0, image - MIN_CANVAS_WIDTH))
+        self.splitter.setSizes([image - moved, panels + moved])
 
     def show_recent(self) -> None:
         self.file_panel.set_recent(self.userdata.recent_files)

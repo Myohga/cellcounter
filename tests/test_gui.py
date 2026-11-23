@@ -624,3 +624,34 @@ def test_dictionary_dialog_registers_edits_and_deletes(window, monkeypatch):
     assert len(window.userdata.markers.entries) > 100
     again = UserData(window.userdata.folder)
     assert again.markers.exact("AT8").imv
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_marker_name_box_stays_inside_its_column(window, scale):
+    """文字が大きい PC（Windows の日本語フォントや表示の拡大）でも、名前の欄が「染まる場所」に重ならない。
+
+    以前は名前の欄に固定の最小幅があり、列がそれより狭くなると隣の列にはみ出していた。
+    """
+    from cellcounter.gui.channel_table import NAME_COLUMN
+
+    font = window.font()
+    font.setPointSizeF(font.pointSizeF() * scale)
+    window.setup_panel.setFont(font)
+    table = build_table(synth.fake_image([synth.dapi_plane(synth.grid_labels(2, 2), 1)] * 3).meta)
+    table.set_marker(1, "AT8")
+    table.set_marker(2, "MAP2")
+    session = synth.build_session(synth.grid_labels(2, 2),
+                                  [synth.dapi_plane(synth.grid_labels(2, 2), 1)] * 3, [])
+    session.table = table
+    window.show()
+    window.show_session(session)
+    window.panels.setCurrentIndex(1)
+    QTest.qWait(100)
+
+    widget = window.setup_panel.table_widget
+    header = widget.horizontalHeader()
+    assert [editors.row.method for editors in widget.editors.values()] == ["imv", "rate"]
+    for editors in widget.editors.values():
+        assert editors.name.geometry().right() < header.sectionViewportPosition(NAME_COLUMN + 1)
+        assert editors.name.width() >= editors.name.minimumSizeHint().width()
+    assert not window.panels.widget(1).horizontalScrollBar().isVisible(), "右のパネルを広げて収める"

@@ -24,6 +24,9 @@ NAME_TOOLTIP = ("マーカー名を入れるか、▼ から選びます。▼ �
                 "辞書のコメントが出ます（辞書は「操作 → 辞書登録」で編集できます）。")
 LOCATION_UNUSED = "判定法が平均蛍光強度のときは、染まる場所は使いません。"
 VISIBLE_NAMES = 20
+NAME_COLUMN = 2
+NAME_MIN_CHARS = 8      # マーカー名の欄に、少なくともこの文字数分の幅を取る
+MIN_TABLE_WIDTH = 520
 
 
 @dataclass
@@ -68,9 +71,9 @@ class ChannelTableWidget(QTableWidget):
         self.verticalHeader().hide()
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.horizontalHeader().setSectionResizeMode(NAME_COLUMN, QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setMinimumSectionSize(40)
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(MIN_TABLE_WIDTH)
         self._table: ChannelTable | None = None
         self._names: list[str] = []
         self.dapi_buttons: dict[int, QRadioButton] = {}
@@ -104,6 +107,23 @@ class ChannelTableWidget(QTableWidget):
             else:
                 self._add_editors(position, row)
         self.resizeRowsToContents()
+        self._fit_width()
+
+    def _fit_width(self) -> None:
+        """マーカー名の列に必要な幅が残るよう、表の最小の幅を決める。
+
+        ほかの列は中身に合わせて広がる（Windows の日本語フォントや表示の拡大では特に広い）。
+        マーカー名の列はその残りなので、表の幅を固定すると縮みすぎて、名前の欄が隣の列に重なる。
+        """
+        header = self.horizontalHeader()
+        others = sum(max(self.sizeHintForColumn(column), header.sectionSizeHint(column))
+                     for column in range(self.columnCount()) if column != NAME_COLUMN)
+        name = header.sectionSizeHint(NAME_COLUMN)
+        for editors in self.editors.values():
+            name = max(name, editors.name.minimumSizeHint().width())
+        # 縦のスクロールバーが出ても足りるよう、その分も取っておく
+        frame = 2 * self.frameWidth() + self.verticalScrollBar().sizeHint().width()
+        self.setMinimumWidth(max(MIN_TABLE_WIDTH, others + name + frame))
 
     def _add_editors(self, position: int, row: ChannelRow) -> None:
         name = QComboBox()
@@ -111,7 +131,10 @@ class ChannelTableWidget(QTableWidget):
         name.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         fill_marker_names(name, self._names)
         name.setCurrentText(row.marker)
-        name.setMinimumWidth(120)
+        # 欄の幅を辞書のいちばん長い名前に合わせない（▼ の一覧は名前の長さに合わせて開く）。
+        # 固定の最小幅も付けない。付けると、列がそれより狭いときに隣の列へはみ出す
+        name.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        name.setMinimumContentsLength(NAME_MIN_CHARS)
         name.lineEdit().setPlaceholderText("例: MAP2")
 
         location = QComboBox()

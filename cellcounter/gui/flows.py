@@ -264,4 +264,5 @@ def edit_dictionary(window) -> None:
     dialog.exec()
     if dialog.edited:
         window.setup_panel.reload_names()
+        window.fit_panels()
         window.message_label.setText("マーカー辞書を保存しました。")
