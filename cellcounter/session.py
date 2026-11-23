@@ -6,19 +6,26 @@ import numpy as np
 
 from .channels import ChannelRow, ChannelTable
 from .czi import LoadedImage
+from .intensity import (ALL_REGIONS, WHOLE_IMAGE, ChannelStats, IntensityRow, Region,
+                        channel_stats, union_mask)
 from .judge import MeasureInput, is_positive, measure
-from .marks import ADDED, AddNucleus, History, Marks, SetBlind, SetCounted, SetPositive
-from .markers import LOCATION_SPECS
+from .marks import (ADDED, AddNucleus, History, Marks, SetBlind, SetCounted, SetPositive,
+                    SetRegions)
+from .markers import IMV_TAB_NAME, LOCATION_SPECS
 from .model import ControlData, Judgement, Nucleus
 from .quality import full_scale
 from .rois import Geometry, free_circle, local_background, window_around
 from .settings import Settings
 
 TAB_DAPI = "DAPI のみ"
+# 平均蛍光強度で測るマーカーは、まとめて 1 つのタブで範囲を描いて測る
+IMV_TAB = IMV_TAB_NAME
 
 
 def tab_name(marker: str | None) -> str:
-    return TAB_DAPI if marker is None else f"DAPI＋{marker}"
+    if marker is None:
+        return TAB_DAPI
+    return IMV_TAB if marker == IMV_TAB else f"DAPI＋{marker}"
 
 
 class Session:
@@ -40,8 +47,12 @@ class Session:
         # 目視判定モード: 自動判定を隠して人が付けた判定（マーカー名 → 核 ID → 陽性か）
         self.blind_active = False
         self.blind: dict[str, dict[int, bool]] = {}
+        # 平均蛍光強度: 判定したときに測ると決めていたマーカー（名前 → チャンネル）と、測る範囲
+        self.imv_channels: dict[str, int] = {}
+        self.regions: list[Region] = []
         self._backgrounds: dict[int, np.ndarray] = {}
         self._centroids: tuple[np.ndarray, np.ndarray] | None = None
+        self._region_stats: dict[object, tuple[int, dict[int, ChannelStats]]] = {}
 
     @property
     def um_per_px(self) -> float:
@@ -87,13 +98,27 @@ class Session:
                 return row.index
         raise KeyError(f"マーカー {marker} はチャンネル表にありません。")
 
+    def imv_markers(self) -> dict[str, int]:
+        """平均蛍光強度で測るマーカー。判定前は、チャンネル表で決めてあるもの。
+
+        判定したあとは、判定したときのもの（チャンネル表を変えても、判定し直すまでは変えない）。
+        """
+        if self.imv_channels or self.labels is not None:
+            return self.imv_channels
+        return {row.marker: row.index for row in self.table.imv() if row.marker}
+
     def shown_channels(self, marker: str | None) -> list[int]:
-        """その組み合わせで背景に出すチャンネル。選び直していなければ DAPI とそのマーカー。"""
+        """その組み合わせで背景に出すチャンネル。選び直していなければ DAPI とそのマーカー。
+
+        平均蛍光強度のタブでは、DAPI と、平均蛍光強度で測るマーカーすべて。
+        """
         chosen = self.shown.get(tab_name(marker))
         if chosen is not None:
             return chosen
         default = [row.index for row in self.table.rows if row.role == "dapi"]
-        if marker is not None:
+        if marker == IMV_TAB:
+            default += [index for index in self.imv_markers().values() if index not in default]
+        elif marker is not None:
             default.append(self.marker_channel(marker))
         return default
 
@@ -160,6 +185,8 @@ class Session:
         """組み合わせのタブ（marker が None なら「DAPI のみ」）でのクリック 1 回分。"""
         if self.labels is None:
             raise RuntimeError("先に核を検出してください。")
+        if marker == IMV_TAB:
+            raise ValueError("平均蛍光強度のタブでは、クリックで核を直せません。")
         if marker is not None and marker not in self.judgements:
             raise KeyError(f"マーカー {marker} は判定されていません。")
 
@@ -190,6 +217,61 @@ class Session:
         self.history.run(edits, self)
         self.dirty = True
         return message
+
+    # ---- 平均蛍光強度 -------------------------------------------------------
+
+    def set_regions(self, regions: list[Region]) -> bool:
+        """測る範囲を置き換える（元に戻せる）。変わらなければ何もせず False。"""
+        regions = list(regions)
+        if regions == self.regions:
+            return False
+        self.history.run([SetRegions(tuple(regions), tuple(self.regions))], self)
+        self.dirty = True
+        return True
+
+    def intensity_channels(self) -> list[int]:
+        """Excel に出すチャンネル。平均蛍光強度で測るマーカーを先に、ほかの蛍光チャンネルをあとに。"""
+        first = list(self.imv_markers().values())
+        rest = [row.index for row in self.table.rows if row.fluorescence and row.index not in first]
+        return [*first, *rest]
+
+    def _stats(self, key: object, mask_of) -> tuple[int, dict[int, ChannelStats]]:
+        """範囲ごとの明るさは、画像が変わらないので一度測れば済む。"""
+        if key not in self._region_stats:
+            mask = mask_of()
+            area = int(self.image.planes[0].size if mask is None else mask.sum())
+            channels = [row.index for row in self.table.rows if row.fluorescence]
+            self._region_stats[key] = (area, channel_stats(self.image.planes, channels, mask))
+        return self._region_stats[key]
+
+    def intensity(self) -> list[IntensityRow]:
+        """範囲ごとの平均蛍光強度。範囲が無ければ画像全体。範囲が 2 つ以上なら、合わせた行も足す。"""
+        shape = self.image.planes.shape[1:]
+        pixel_um2 = self.um_per_px ** 2
+        centroids = None
+        if self.labels is not None:
+            centroids = np.array([(n.y, n.x) for i, n in self.nuclei.items()
+                                  if self.marks.counted.get(i)]).reshape(-1, 2)
+
+        def row(name: str, shape_label: str, key: object, mask_of, inside, bounds: str):
+            area, stats = self._stats(key, mask_of)
+            nuclei = None if centroids is None else int(inside(centroids).sum())
+            return IntensityRow(name, shape_label, area, round(area * pixel_um2, 2), nuclei,
+                                bounds, stats)
+
+        if not self.regions:
+            return [row(WHOLE_IMAGE, "—", None, lambda: None,
+                        lambda points: np.ones(len(points), bool),
+                        f"x 0–{shape[1] - 1}, y 0–{shape[0] - 1}")]
+        rows = [row(f"範囲 {number}", region.label, region,
+                    lambda region=region: region.mask(shape), region.contains, region.bounds())
+                for number, region in enumerate(self.regions, 1)]
+        if len(self.regions) > 1:
+            regions = tuple(self.regions)
+            rows.append(row(ALL_REGIONS, "—", regions, lambda: union_mask(list(regions), shape),
+                            lambda points: np.any([r.contains(points) for r in regions], axis=0),
+                            "—"))
+        return rows
 
     def undo(self) -> bool:
         changed = self.history.undo(self)

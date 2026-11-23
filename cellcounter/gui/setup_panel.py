@@ -103,6 +103,8 @@ class SetupPanel(QWidget):
         guide = QLabel(
             "● を付けたチャンネルで核を検出して数えます（陽性率の分母。ふつうは DAPI / Hoechst）。"
             "ほかのチャンネルには、マーカー名を入れて「判定」に ✓ を付けます。\n"
+            "判定法は「陽性率」（核ごとに陽性・陰性を数える）か「平均蛍光強度」（範囲の明るさの平均。"
+            "ZEN の Intensity Mean Value）を選べます。AT8 などのタウのマーカーは、自動で平均蛍光強度になります。\n"
             "画面に重ねる画像は、ここではなく「③ 判定・修正」で選べます。")
         guide.setWordWrap(True)
 
@@ -122,6 +124,11 @@ class SetupPanel(QWidget):
         self._table = table
         self.table_widget.set_table(table, self._userdata.marker_names)
         self._on_changed(notify=False)
+
+    def reload_names(self) -> None:
+        """マーカー辞書を編集したあと、▼ の一覧とコメントを作り直す（入れてある値は変えない）。"""
+        if self._table is not None:
+            self.table_widget.set_table(self._table, self._userdata.marker_names)
 
     def show_warnings(self, warnings: list[str]) -> None:
         """読み込み時の警告（階調の不足など）を、判定の前から見えるようにする。"""

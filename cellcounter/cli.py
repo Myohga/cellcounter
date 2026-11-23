@@ -12,12 +12,13 @@ from .channels import ChannelRow, ChannelTable, apply_preset, build_table, load_
 from .control import collect_control
 from .czi import list_scenes, read_scene
 from .dyes import normalize
-from .export import export_results
-from .markers import LOCATION_SPECS, location_key
+from .export import export_results, results_name
+from .markers import LOCATION_SPECS, METHOD_IMV, location_key, use_dictionary
 from .pipeline import open_session, run_detection, run_judgement
 from .session import Session
 from .settings import Z_PROJECTIONS, Settings
 from .tally import summarize
+from .userdata import data_dir, load_marker_dictionary
 
 
 def _find_row(table: ChannelTable, text: str) -> ChannelRow:
@@ -50,6 +51,8 @@ def _print_table(table: ChannelTable) -> None:
             role = "DAPI（核・分母）"
         elif row.role == "unused":
             role = "使わない（蛍光ではない）"
+        elif row.marker and row.method == METHOD_IMV:
+            role = f"{row.marker}／平均蛍光強度／{'測る' if row.judge else '測らない'}"
         elif row.marker:
             place = LOCATION_SPECS[row.location].label if row.location else "未選択"
             role = f"{row.marker}／{place}／判定 {'ON' if row.judge else 'OFF'}"
@@ -101,6 +104,7 @@ def _control_sources(args: argparse.Namespace) -> list[tuple[str, int]]:
 
 
 def _analyze(args: argparse.Namespace) -> int:
+    results_name(args.name)  # 使えない文字があれば、時間のかかる検出の前に止める
     session = _configure(args, args.czi, args.scene)
     print("核を検出しています（Cellpose。CPU では数分かかります）…")
     run_detection(session)
@@ -109,16 +113,21 @@ def _analyze(args: argparse.Namespace) -> int:
         print("陰性対照を測っています…")
         control = collect_control(session, _control_sources(args))
     run_judgement(session, control)
-    folder = export_results(session, args.out)
+    folder = export_results(session, args.out, args.name)
 
     for row in summarize(session):
         rate = f"{row.rate:.1f}%" if row.rate is not None else "—"
         print(f"  {row.name}: {row.positive} / {row.total}（{rate}）")
+    if session.imv_channels:
+        for row in session.intensity():
+            values = "、".join(f"{marker} {row.stats[index].mean:.1f}"
+                              for marker, index in session.imv_channels.items())
+            print(f"  平均蛍光強度（{row.name}）: {values}")
     if session.provisional:
         print("※ 暫定（陰性対照なし）: 固定の閾値で判定しています。")
     for warning in session.warnings:
         print(f"警告: {warning}")
-    print(f"出力先: {folder}")
+    print(f"出力先: {folder}（{results_name(args.name)}）")
     return 0
 
 
@@ -158,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if stream is not None:
             stream.reconfigure(errors="replace")
+    # 画面の「操作 → 辞書登録」で登録したマーカーを、コマンドラインでも使う
+    dictionary, notice = load_marker_dictionary(data_dir())
+    use_dictionary(dictionary)
+    if notice:
+        print(f"警告: {notice}", file=sys.stderr)
 
     parser = argparse.ArgumentParser(
         prog="cellcounter", description="免疫染色画像のマーカー陽性判定。何も指定しなければ画面を開く")
@@ -181,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
     analyze.add_argument("czi")
     analyze.add_argument("--scene", type=int, default=0)
     analyze.add_argument("--out", help="出力フォルダ（省くと .czi の隣の <名前>_cellcounter）")
+    analyze.add_argument("--name", default="",
+                         help="結果の Excel の名前の前半（<名前>_result_<日付>.xlsx。"
+                              "省くと result_<日付>.xlsx）")
     analyze.set_defaults(run=_analyze)
 
     batch = commands.add_parser("batch", help="複数の .czi（全シーン）を同じ設定で判定してまとめる")
@@ -205,7 +222,8 @@ def _add_judging_options(analyze: argparse.ArgumentParser) -> None:
                          help=f"Z の重ね方: {' / '.join(Z_PROJECTIONS)} / plane:3（3 枚目だけ）")
     analyze.add_argument("--dapi", help="DAPI のチャンネル（自動で決まらないとき）")
     analyze.add_argument("--marker", action="append", default=[],
-                         help="例: AF488=MAP2 / AF647=NKX2.1:核（何度でも指定できる）")
+                         help="例: AF488=MAP2 / AF647=NKX2.1:核（何度でも指定できる。"
+                              "判定法は辞書で決まる。AT8 などは平均蛍光強度）")
     analyze.add_argument("--preset", help="チャンネル表のプリセット (.json)")
     analyze.add_argument("--control", action="append", default=[],
                          help="陰性対照の .czi（何度でも指定できる。全シーンを使う）")

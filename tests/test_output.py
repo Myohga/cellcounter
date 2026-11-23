@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 import synth
 from cellcounter import __version__
 from cellcounter.excel import PROVISIONAL, TABLE_TOP
-from cellcounter.export import export_results
+from cellcounter.export import export_results, results_name
 from cellcounter.project import load_project
 from cellcounter.tally import cell_table, coexpression, counted_ids, summarize
 
@@ -59,11 +59,11 @@ def test_export_writes_everything_into_a_new_folder(session, tmp_path):
     assert not os.path.exists(folder)
     assert export_results(session, folder) == folder
     names = set(os.listdir(folder))
-    assert {"results.xlsx", "synthetic.cellcounter", "確認_DAPI_のみ.png", "確認_DAPI＋NUC.png",
+    assert {results_name(), "synthetic.cellcounter", "確認_DAPI_のみ.png", "確認_DAPI＋NUC.png",
             "確認_DAPI＋CYT.png"} <= names
     assert not session.dirty
 
-    book = load_workbook(os.path.join(folder, "results.xlsx"))
+    book = load_workbook(os.path.join(folder, results_name()))
     assert book.sheetnames == ["Summary", "Coexpression", "Cells", "Settings", "Thresholds"]
     for sheet in book:
         assert sheet["A2"].value == PROVISIONAL

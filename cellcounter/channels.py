@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 
 from .dyes import NUCLEAR_STAINS, color_of_wavelength, identify_dye
-from .markers import guess_location, location_spec
+from .markers import IMV_TAB_NAME, METHOD_IMV, METHOD_RATE, METHODS, location_spec, lookup
 from .metadata import ImageMeta
 
 PRESET_FORMAT = 1
@@ -25,6 +25,7 @@ class ChannelRow:
     location: str = ""
     judge: bool = False
     color: str = "#FFFFFF"
+    method: str = METHOD_RATE  # "rate"（陽性率）| "imv"（平均蛍光強度）
 
     @property
     def title(self) -> str:
@@ -52,7 +53,14 @@ class ChannelTable:
         return chosen[0]
 
     def judged(self) -> list[ChannelRow]:
-        return [row for row in self.rows if row.role == "marker" and row.judge]
+        """陽性率で判定するマーカーの行。"""
+        return [row for row in self.rows
+                if row.role == "marker" and row.judge and row.method == METHOD_RATE]
+
+    def imv(self) -> list[ChannelRow]:
+        """平均蛍光強度で測るマーカーの行。"""
+        return [row for row in self.rows
+                if row.role == "marker" and row.judge and row.method == METHOD_IMV]
 
     def set_dapi(self, index: int) -> None:
         """核を数えるチャンネルを選び直す。行に入れてあるマーカー名などは消さない。"""
@@ -65,31 +73,46 @@ class ChannelTable:
         target.role = "dapi"
 
     def set_marker(self, index: int, marker: str, location: str | None = None,
-                   judge: bool = True) -> None:
-        """location を省くと辞書から推定する。辞書に無ければ空のまま（problems が指摘する）。"""
+                   judge: bool = True, method: str | None = None) -> None:
+        """location と method を省くと辞書から決める。
+
+        辞書に無ければ、染まる場所は空のまま（problems が指摘する）、判定法は陽性率。
+        辞書で「核を数える」になっている名前なら、そのチャンネルを核を数えるチャンネルにする。
+        """
         row = self.row(index)
         if row.role != "marker":
             raise ValueError(f"{row.name} にはマーカーを割り当てられません（{row.role}）。")
+        entry = lookup(marker)
         if location is None:
-            location = guess_location(marker) or ""
+            location = entry.location if entry else ""
         elif location:
             location_spec(location)
-        row.marker, row.location, row.judge = marker.strip(), location, judge
+        if method is None:
+            method = METHOD_IMV if entry and entry.imv else METHOD_RATE
+        elif method not in METHODS:
+            raise ValueError(f"判定法の指定が不正です: '{method}'（{' / '.join(METHODS)} のいずれか）")
+        row.marker, row.location, row.judge, row.method = marker.strip(), location, judge, method
+        if entry and entry.counts_nuclei:
+            self.set_dapi(index)
 
     def problems(self) -> list[str]:
         """判定を始める前に直すべき点。空なら問題なし。"""
         found = []
         if sum(row.role == "dapi" for row in self.rows) != 1:
             found.append("DAPI のチャンネルが決まっていません。")
-        names = [row.marker for row in self.judged()]
-        for row in self.judged():
+        used = [*self.judged(), *self.imv()]
+        names = [row.marker for row in used]
+        for row in used:
             if not row.marker:
                 found.append(f"{row.name}: マーカー名が空です。")
-            elif not row.location:
+            elif row.method == METHOD_RATE and not row.location:
+                # 平均蛍光強度は範囲の明るさをそのまま測るので、染まる場所は使わない
                 found.append(f"{row.name}（{row.marker}）: 染まる場所を選んでください"
                              "（辞書に無い名前なので推定できません）。")
             if row.marker and names.count(row.marker) > 1:
                 found.append(f"マーカー名 {row.marker} が重複しています。")
+            if row.marker == IMV_TAB_NAME:
+                found.append(f"マーカー名「{IMV_TAB_NAME}」は、タブの名前と同じなので使えません。")
         return list(dict.fromkeys(found))
 
     def to_list(self) -> list[dict]:
@@ -119,7 +142,7 @@ def build_table(meta: ImageMeta) -> ChannelTable:
 
 def preset_of(table: ChannelTable, name: str) -> dict:
     channels = [{"channel": row.name, "dye": row.dye, "role": row.role, "marker": row.marker,
-                 "location": row.location, "judge": row.judge}
+                 "location": row.location, "judge": row.judge, "method": row.method}
                 for row in table.rows if row.fluorescence]
     return {"format": PRESET_FORMAT, "name": name, "channels": channels}
 
@@ -141,7 +164,12 @@ def apply_preset(table: ChannelTable, preset: dict) -> None:
     for row, entry in matched:
         if entry["location"]:
             location_spec(entry["location"])
+        # 判定法が無いのは、平均蛍光強度を足す前に保存したプリセット（すべて陽性率）
+        method = entry.get("method", METHOD_RATE)
+        if method not in METHODS:
+            raise ValueError(f"プリセットの判定法が不正です: '{method}'")
         row.marker, row.location, row.judge = entry["marker"], entry["location"], entry["judge"]
+        row.method = method
     for row, entry in matched:
         if entry["role"] == "dapi":
             table.set_dapi(row.index)

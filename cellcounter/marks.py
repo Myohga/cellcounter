@@ -89,6 +89,20 @@ class SetBlind:
         session.blind[self.marker][self.nucleus_id] = self.previous
 
 
+@dataclass(frozen=True)
+class SetRegions:
+    """平均蛍光強度を測る範囲の置き換え（描く・動かす・消すのどれも、前後の一覧で持つ）。"""
+
+    value: tuple
+    previous: tuple
+
+    def apply(self, session) -> None:
+        session.regions = list(self.value)
+
+    def revert(self, session) -> None:
+        session.regions = list(self.previous)
+
+
 @dataclass(frozen=True, eq=False)
 class AddNucleus:
     """手で作った円い核。測った値ごと持つので、やり直しても測り直さない。"""

@@ -1,21 +1,29 @@
-"""チャンネル表の編集（核を数えるチャンネル・マーカー名・染まる場所・判定の ON/OFF）。"""
+"""チャンネル表の編集（核を数えるチャンネル・マーカー名・染まる場所・判定法・判定の ON/OFF）。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QHeaderView,
                             QRadioButton, QTableWidget, QTableWidgetItem)
 
 from ..channels import ChannelRow, ChannelTable
-from ..markers import LOCATION_SPECS, guess_location
+from ..markers import (LOCATION_SPECS, METHOD_IMV, METHOD_RATE, METHODS, active_dictionary,
+                       lookup, marker_key)
 
-COLUMNS = ("チャンネル", "核を数える", "マーカー名", "染まる場所", "判定")
+COLUMNS = ("チャンネル", "核を数える", "マーカー名", "染まる場所", "判定法", "判定")
 UNSELECTED = "（未選択）"
 DAPI_ROW_TEXT = "このチャンネルで核を検出して数えます（陽性率の分母）"
 DAPI_TOOLTIP = ("核を検出して数えるチャンネルを 1 つ選びます（ふつうは DAPI / Hoechst）。\n"
                 "画面に出す画像を選ぶボタンではありません。")
+METHOD_TOOLTIP = ("陽性率: 核ごとに陽性・陰性を決めて数えます。\n"
+                  "平均蛍光強度: ③ の「平均蛍光強度」のタブで範囲を描き、その中の明るさの平均を測ります"
+                  "（ZEN の Intensity Mean Value）。染まる場所は使いません。")
+NAME_TOOLTIP = ("マーカー名を入れるか、▼ から選びます。▼ の一覧で名前にポインターを合わせると、"
+                "辞書のコメントが出ます（辞書は「操作 → 辞書登録」で編集できます）。")
+LOCATION_UNUSED = "判定法が平均蛍光強度のときは、染まる場所は使いません。"
+VISIBLE_NAMES = 20
 
 
 @dataclass
@@ -23,7 +31,28 @@ class _Editors:
     row: ChannelRow
     name: QComboBox
     location: QComboBox
+    method: QComboBox
     judge: QCheckBox
+
+
+def fill_marker_names(combo: QComboBox, used: list[str]) -> None:
+    """マーカー名の ▼ の一覧。前に使った名前を先に、辞書の名前をあとに並べる。
+
+    名前にポインターを合わせると、辞書のコメント（無ければ染まる場所と判定法）が出る。
+    """
+    dictionary = active_dictionary()
+    used_keys = {marker_key(name) for name in used}
+    known = sorted((entry.name for entry in dictionary.entries
+                    if entry.key not in used_keys), key=str.casefold)
+    combo.addItems(used)
+    if used and known:
+        combo.insertSeparator(combo.count())
+    combo.addItems(known)
+    for position in range(combo.count()):
+        entry = dictionary.find(combo.itemText(position))
+        if entry is not None:
+            combo.setItemData(position, entry.describe(), Qt.ItemDataRole.ToolTipRole)
+    combo.setMaxVisibleItems(VISIBLE_NAMES)
 
 
 class ChannelTableWidget(QTableWidget):
@@ -35,12 +64,13 @@ class ChannelTableWidget(QTableWidget):
         super().__init__(0, len(COLUMNS))
         self.setHorizontalHeaderLabels(COLUMNS)
         self.horizontalHeaderItem(1).setToolTip(DAPI_TOOLTIP)
+        self.horizontalHeaderItem(4).setToolTip(METHOD_TOOLTIP)
         self.verticalHeader().hide()
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setMinimumSectionSize(40)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)
         self._table: ChannelTable | None = None
         self._names: list[str] = []
         self.dapi_buttons: dict[int, QRadioButton] = {}
@@ -79,7 +109,7 @@ class ChannelTableWidget(QTableWidget):
         name = QComboBox()
         name.setEditable(True)
         name.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        name.addItems(self._names)
+        fill_marker_names(name, self._names)
         name.setCurrentText(row.marker)
         name.setMinimumWidth(120)
         name.lineEdit().setPlaceholderText("例: MAP2")
@@ -90,18 +120,27 @@ class ChannelTableWidget(QTableWidget):
             location.addItem(spec.label, key)
         location.setCurrentIndex(max(location.findData(row.location), 0))
 
+        method = QComboBox()
+        for key, label in METHODS.items():
+            method.addItem(label, key)
+        method.setCurrentIndex(max(method.findData(row.method), 0))
+        method.setToolTip(METHOD_TOOLTIP)
+
         judge = QCheckBox()
         judge.setChecked(row.judge)
-        judge.setToolTip("ON にしたマーカーを自動判定し、組み合わせのタブを作ります。")
+        judge.setToolTip("ON にしたマーカーを、選んだ判定法で測ります"
+                         "（陽性率なら組み合わせのタブを、平均蛍光強度なら「平均蛍光強度」のタブを作ります）。")
 
-        editors = _Editors(row, name, location, judge)
-        for column, editor in enumerate((name, location, judge), 2):
+        editors = _Editors(row, name, location, method, judge)
+        for column, editor in enumerate((name, location, method, judge), 2):
             self.setCellWidget(position, column, editor)
         self.editors[row.index] = editors
+        self._show_state(editors)
 
         name.lineEdit().editingFinished.connect(lambda e=editors: self._name_edited(e))
         name.activated.connect(lambda _index, e=editors: self._name_edited(e))
         location.activated.connect(lambda _index, e=editors: self._apply(e))
+        method.activated.connect(lambda _index, e=editors: self._apply(e))
         judge.clicked.connect(lambda _checked, e=editors: self._apply(e))
 
     def _choose_dapi(self, row: ChannelRow) -> None:
@@ -111,19 +150,38 @@ class ChannelTableWidget(QTableWidget):
         self.changed.emit()
 
     def _name_edited(self, editors: _Editors) -> None:
-        """名前が変わったら、辞書から染まる場所を引き直す。辞書に無ければ未選択に戻す。"""
+        """名前が変わったら、辞書から染まる場所と判定法を引き直す。辞書に無ければ未選択・陽性率。
+
+        辞書で「核を数える」になっている名前なら、そのチャンネルを核を数えるチャンネルにする。
+        """
         name = editors.name.currentText().strip()
         if name == editors.row.marker:
             return
-        guessed = guess_location(name) or ""
-        editors.location.setCurrentIndex(max(editors.location.findData(guessed), 0))
+        entry = lookup(name)
+        location = entry.location if entry else ""
+        method = METHOD_IMV if entry and entry.imv else METHOD_RATE
+        editors.location.setCurrentIndex(max(editors.location.findData(location), 0))
+        editors.method.setCurrentIndex(editors.method.findData(method))
         editors.judge.setChecked(bool(name))
         self._apply(editors)
+        if entry and entry.counts_nuclei:
+            self._choose_dapi(editors.row)
 
     def _apply(self, editors: _Editors) -> None:
         row = editors.row
         row.marker = editors.name.currentText().strip()
         row.location = editors.location.currentData()
+        row.method = editors.method.currentData()
         row.judge = editors.judge.isChecked() and bool(row.marker)
         editors.judge.setChecked(row.judge)
+        self._show_state(editors)
         self.changed.emit()
+
+    @staticmethod
+    def _show_state(editors: _Editors) -> None:
+        """平均蛍光強度では染まる場所を使わないので、選べないようにする（値は残す）。"""
+        rate = editors.row.method == METHOD_RATE
+        editors.location.setEnabled(rate)
+        editors.location.setToolTip("" if rate else LOCATION_UNUSED)
+        entry = lookup(editors.row.marker) if editors.row.marker else None
+        editors.name.setToolTip(entry.describe() if entry else NAME_TOOLTIP)

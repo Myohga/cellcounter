@@ -10,9 +10,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .marks import ADDED, AUTO, REMOVED
-from .session import Session, tab_name
+from .session import IMV_TAB, Session, tab_name
 
 COLORS = {AUTO: (255, 221, 0), ADDED: (0, 229, 255), REMOVED: (255, 64, 64)}
+REGION_COLOR = (255, 255, 255)
 CAPTIONS = {AUTO: "自動で付いた ×", ADDED: "人が足した ×", REMOVED: "人が消した ×"}
 _FONTS = (
     r"C:\Windows\Fonts\meiryo.ttc", r"C:\Windows\Fonts\YuGothM.ttc",
@@ -69,13 +70,18 @@ def render(session: Session, marker: str | None) -> Image.Image:
             counts[kind] += 1
             _cross(canvas, nucleus.y, nucleus.x, half, COLORS[kind], thickness)
 
-    height, width = canvas.shape[:2]
-    size = max(14, width // 45)
     lines = [(f"{os.path.basename(session.image.path)}　{tab_name(marker)}", (255, 255, 255))]
     if marker is not None and session.judgements[marker].provisional:
         lines.append(("暫定（陰性対照なし）", COLORS[REMOVED]))
     lines += [(f"× {CAPTIONS[kind]}: {counts[kind]}", COLORS[kind]) for kind in COLORS]
+    image, _draw, _font_used = _with_legend(canvas, lines)
+    return image
 
+
+def _with_legend(canvas: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]]):
+    """画像の下に黒い帯を足し、凡例の行を書く。あとから書き足せるよう draw と font も返す。"""
+    height, width = canvas.shape[:2]
+    size = max(14, width // 45)
     line_height = round(size * 1.5)
     image = Image.new("RGB", (width, height + line_height * len(lines) + size), (0, 0, 0))
     image.paste(Image.fromarray(canvas), (0, 0))
@@ -84,14 +90,35 @@ def render(session: Session, marker: str | None) -> Image.Image:
     for number, (text, color) in enumerate(lines):
         top = height + size // 2 + number * line_height
         draw.text((size // 2, top), text, fill=color, font=font)
+    return image, draw, font
+
+
+def render_intensity(session: Session) -> Image.Image:
+    """平均蛍光強度のタブ。測った範囲の縁と番号を描き、下の帯に範囲ごとの値を入れる。"""
+    canvas = np.ascontiguousarray(_background(session, IMV_TAB))
+    for region in session.regions:
+        points = np.round(region.outline()[:, ::-1]).astype(np.int32)  # (x, y) の順にする
+        cv2.polylines(canvas, [points], True, REGION_COLOR, 1, cv2.LINE_AA)
+
+    markers = session.imv_channels
+    lines = [(f"{os.path.basename(session.image.path)}　{IMV_TAB}", (255, 255, 255))]
+    for row in session.intensity():
+        values = " ／ ".join(f"{marker} {row.stats[index].mean:.1f}"
+                            for marker, index in markers.items())
+        lines.append((f"{row.name}（{row.area_um2:g} µm²）: {values}", REGION_COLOR))
+    image, draw, font = _with_legend(canvas, lines)
+    for number, region in enumerate(session.regions, 1):
+        top, left = region.outline().min(axis=0)
+        draw.text((max(0, left) + 3, max(0, top) + 1), str(number), fill=REGION_COLOR, font=font)
     return image
 
 
 def save_all(session: Session, folder: str) -> list[str]:
     paths = []
-    for marker in (None, *session.judgements):
+    tabs = [None, *session.judgements, *([IMV_TAB] if session.imv_channels else [])]
+    for marker in tabs:
         safe = re.sub(r'[\\/:*?"<>|\s]+', "_", tab_name(marker))
         path = os.path.join(folder, f"確認_{safe}.png")
-        render(session, marker).save(path)
+        (render_intensity(session) if marker == IMV_TAB else render(session, marker)).save(path)
         paths.append(path)
     return paths

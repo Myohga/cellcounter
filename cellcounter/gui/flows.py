@@ -11,12 +11,13 @@ from ..batch import BATCH_NAME, refresh_batch, run_batch
 from ..channels import apply_preset, build_table, preset_of
 from ..control import collect_control
 from ..czi import list_scenes, read_scene
-from ..export import RESULTS_NAME, default_folder, export_results
+from ..export import default_folder, export_results
 from ..pipeline import open_session, run_detection, run_judgement
 from ..project import EXTENSION, load_project, save_project
 from ..settings import Settings
 from .batch_dialog import BatchDialog
 from .dialogs import confirm, show_error, show_export_done
+from .marker_dialog import MarkerDictionaryDialog
 
 PANEL_FILE, PANEL_SETUP, PANEL_REVIEW, PANEL_OUTPUT = range(4)
 
@@ -159,18 +160,25 @@ def export(window) -> None:
     if not window.judged or window.runner.busy:
         return
     folder = window.output_panel.folder.text().strip() or default_folder(session.image.path)
-    if os.path.isfile(os.path.join(folder, RESULTS_NAME)) and not confirm(
-            window, "上書きしますか？", f"このフォルダには前の結果があります。上書きしますか？\n{folder}"):
+    prefix = window.output_panel.name.text()
+    try:
+        name = window.output_panel.file_name()
+    except ValueError as error:
+        QMessageBox.warning(window, "結果ファイルの名前を直してください", str(error))
+        return
+    if os.path.isfile(os.path.join(folder, name)) and not confirm(
+            window, "上書きしますか？",
+            f"このフォルダには同じ名前の結果があります。上書きしますか？\n{os.path.join(folder, name)}"):
         return
 
     def task():
         yield "結果を書き出しています"
-        return export_results(session, folder)
+        return export_results(session, folder, prefix)
 
     def done(written: str) -> None:
         window.exported = True
         window.userdata.clear_autosave()
-        window.output_panel.result.setText(f"出力しました: {written}")
+        window.output_panel.result.setText(f"出力しました: {os.path.join(written, name)}")
         window.refresh()
         show_export_done(window, written)
 
@@ -248,3 +256,12 @@ def batch_refresh(window) -> None:
         show_export_done(window, folder)
 
     window.runner.start("集計のやり直し", task, done)
+
+
+def edit_dictionary(window) -> None:
+    """操作 → 辞書登録。閉じたら、② のマーカー名の一覧とコメントを作り直す。"""
+    dialog = MarkerDictionaryDialog(window, window.userdata)
+    dialog.exec()
+    if dialog.edited:
+        window.setup_panel.reload_names()
+        window.message_label.setText("マーカー辞書を保存しました。")

@@ -13,7 +13,7 @@ import numpy as np
 from . import __version__
 from .judge import RULES
 from .marks import ADDED, REMOVED
-from .markers import LOCATION_SPECS
+from .markers import LOCATION_SPECS, METHOD_IMV
 from .session import Session, tab_name
 
 
@@ -235,6 +235,10 @@ def settings_record(session: Session) -> list[tuple[str, str]]:
     for row in session.table.rows:
         if row.role == "dapi":
             role = "DAPI（核・分母）"
+        elif row.role == "marker" and row.marker and row.method == METHOD_IMV:
+            # 陽性・陰性は決めないので、「判定 ON」とは書かない。値は別のシートにある
+            role = (f"{row.marker}／判定法 平均蛍光強度（Intensity Mean Value シート）／"
+                    f"{'測る' if row.judge else '測らない'}")
         elif row.role == "marker" and row.marker:
             location = LOCATION_SPECS[row.location].label if row.location else "未選択"
             role = f"{row.marker}／{location}／判定 {'ON' if row.judge else 'OFF'}"

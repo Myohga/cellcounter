@@ -11,8 +11,10 @@ from qtpy.QtWidgets import (QFileDialog, QLabel, QMainWindow, QMessageBox, QProg
 from .. import __version__
 from ..czi import list_scenes
 from ..export import default_folder
+from ..intensity import Region
+from ..markers import use_dictionary
 from ..project import EXTENSION
-from ..session import Session
+from ..session import IMV_TAB, Session
 from ..userdata import UserData
 from . import flows
 from .canvas import Canvas
@@ -30,13 +32,17 @@ BLIND_BANNER = "目視判定モード: 自動判定を隠しています。マ�
 AUTOSAVE_INTERVAL_MS = 60_000
 _MENUS = (("ファイル", ("open", "open_project", "save_project")), ("編集", ("undo", "redo")),
           ("表示", ("next_tab", "previous_tab")),
-          ("実行", ("judge", "export", "batch", "batch_refresh")), ("ヘルプ", ("help",)))
+          ("実行", ("judge", "export", "batch", "batch_refresh")), ("操作", ("dictionary",)),
+          ("ヘルプ", ("help",)))
+IMV_CLICK_HINT = "平均蛍光強度のタブでは、③ の「測る範囲」で描き方を選んでから、画像の上で範囲を描きます。"
 
 
 class MainWindow(QMainWindow):
     def __init__(self, userdata: UserData | None = None) -> None:
         super().__init__()
         self.userdata = userdata or UserData()
+        # マーカー名を入れたときに引く辞書を、この利用者のもの（操作 → 辞書登録で編集したもの）にする
+        use_dictionary(self.userdata.markers)
         self.session: Session | None = None
         self.detected_with: dict | None = None
         self.control_cache: tuple[str, object] | None = None
@@ -82,6 +88,7 @@ class MainWindow(QMainWindow):
                  "undo": self.undo, "redo": self.redo, "help": lambda: show_help(self),
                  "batch": lambda: flows.batch(self),
                  "batch_refresh": lambda: flows.batch_refresh(self),
+                 "dictionary": lambda: flows.edit_dictionary(self),
                  "next_tab": lambda: self.canvas.step_tab(1),
                  "previous_tab": lambda: self.canvas.step_tab(-1)}
         self.actions_by_name = {entry.name: make_action(self, entry.name, slots[entry.name])
@@ -107,6 +114,11 @@ class MainWindow(QMainWindow):
         self.review_panel.channel_toggled.connect(self._on_channel_toggled)
         self.review_panel.marks_toggled.connect(self.canvas.set_marks_visible)
         self.review_panel.blind_toggled.connect(self._on_blind)
+        self.review_panel.region_mode_requested.connect(self.canvas.set_region_mode)
+        self.review_panel.delete_regions_requested.connect(self.canvas.delete_selected_regions)
+        self.review_panel.clear_regions_requested.connect(lambda: self._on_regions_edited([]))
+        self.canvas.region_mode_changed.connect(self.review_panel.show_region_mode)
+        self.canvas.regions_edited.connect(self._on_regions_edited)
         self.output_panel.export_requested.connect(self.export)
         self.output_panel.save_requested.connect(self.save_work)
         self.canvas.clicked.connect(self._on_click)
@@ -172,6 +184,7 @@ class MainWindow(QMainWindow):
         self.setup_panel.show_settings(session.settings)
         self.review_panel.show_session(session)
         self.output_panel.folder.setText(default_folder(image.path))
+        self.output_panel.name.clear()
         self.canvas.show_session(session)
         self.refresh()
 
@@ -181,8 +194,14 @@ class MainWindow(QMainWindow):
         session, marker = self.session, self.canvas.current_marker()
         if session is None or self.runner.busy:
             return
-        if session.labels is None or (marker is not None and marker not in session.judgements):
+        if session.labels is None or (marker not in (None, IMV_TAB)
+                                      and marker not in session.judgements):
             self.message_label.setText("先に [判定] を押してください。")
+            return
+        if marker == IMV_TAB:
+            # クリックは範囲を描く操作（多角形の頂点など）なので、核は直さない
+            if self.canvas.region_mode() == "pan":
+                self.message_label.setText(IMV_CLICK_HINT)
             return
         try:
             message = session.click(marker, y, x)
@@ -208,8 +227,18 @@ class MainWindow(QMainWindow):
         self.session.set_blind(active)
         self.refresh()
 
+    def _on_regions_edited(self, regions: list[Region]) -> None:
+        """平均蛍光強度を測る範囲を描いた・動かした・消した。元に戻せるよう作業の履歴に積む。"""
+        session = self.session
+        if session is None or self.runner.busy:
+            return
+        if session.set_regions(regions):
+            count = len(session.regions)
+            self._after_edit(f"測る範囲を変えました（{count} 個）" if count
+                             else "測る範囲を消しました（画像全体を測ります）")
+
     def _on_setup_changed(self) -> None:
-        self.stale = bool(self.session and self.session.judgements)
+        self.stale = bool(self.session and (self.session.judgements or self.session.imv_channels))
         self.refresh()
 
     # ---- 表示の更新 ---------------------------------------------------------
@@ -220,8 +249,12 @@ class MainWindow(QMainWindow):
         title = f"cellcounter {__version__}"
         if session is not None:
             title += f" — {os.path.basename(session.image.path)}"
-            ready = [row.marker for row in session.table.judged() if row.marker]
-            self.canvas.set_markers(list(session.judgements) if session.judgements else ready)
+            if session.judgements or session.imv_channels:
+                markers = list(session.judgements)
+            else:
+                markers = [row.marker for row in session.table.judged() if row.marker]
+            # 平均蛍光強度で測るマーカーは、まとめて 1 つのタブにする
+            self.canvas.set_markers(markers + ([IMV_TAB] if session.imv_markers() else []))
             banner = PROVISIONAL_BANNER if session.provisional else ""
             self.canvas.set_banner(BLIND_BANNER if session.blind_active else banner)
             self.review_panel.refresh(session, self.canvas.current_marker())

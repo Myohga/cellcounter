@@ -2,6 +2,7 @@
 
 import os
 
+import numpy as np
 import pytest
 
 pytest.importorskip("napari")
@@ -29,11 +30,15 @@ def app():
 
 @pytest.fixture
 def window(app, tmp_path):
+    from cellcounter.markers import MarkerDictionary, use_dictionary
+
     window = MainWindow(UserData(str(tmp_path / "user")))
     yield window
     if window.session:
         window.session.dirty = False
     window.close()
+    # 画面は利用者の辞書をモジュール全体の辞書にするので、あとのテストのために初期の辞書へ戻す
+    use_dictionary(MarkerDictionary())
 
 
 @pytest.fixture
@@ -430,3 +435,192 @@ def test_batch_dialog_lets_the_user_rename_conditions(app, monkeypatch, tmp_path
         ("ctrl", "ctrl_1.czi"), ("薬剤", "ctrl_2.czi")]
     dialog.add([str(tmp_path)])
     assert dialog.table.rowCount() == 2, "同じ画像を二重に足さない"
+
+
+# ---- 平均蛍光強度・辞書登録・結果ファイルの名前 ------------------------------------------
+
+
+@pytest.fixture
+def tau(window):
+    """NUC は陽性率、AT8（辞書でタウ → 平均蛍光強度）を測る画像を開いた画面。"""
+    from cellcounter.pipeline import run_judgement
+
+    labels = synth.grid_labels(6, 6)
+    planes = [synth.dapi_plane(labels, 1), synth.marker_plane(labels, {1, 2}, "nucleus", 2),
+              synth.marker_plane(labels, set(range(1, 19)), "cytoplasm", 3)]
+    session = synth.build_session(labels, planes, [(1, "NUC", "nuclear")])
+    session.table.set_marker(2, "AT8")
+    run_judgement(session, None)
+    window.show_session(session)
+    return window
+
+
+def _tab(window, name: str) -> None:
+    tabs = [window.canvas.tabs.tabText(index) for index in range(window.canvas.tabs.count())]
+    window.canvas.tabs.setCurrentIndex(tabs.index(name))
+
+
+def test_dictionary_is_under_the_operations_menu(window):
+    menus = {action.text(): action.menu() for action in window.menuBar().actions()}
+    assert list(menus)[-2:] == ["操作", "ヘルプ"]
+    assert [action.text() for action in menus["操作"].actions()] == ["辞書登録…"]
+
+
+def test_channel_table_takes_method_and_comment_from_the_dictionary(app):
+    from cellcounter.gui.channel_table import fill_marker_names
+    from qtpy.QtWidgets import QComboBox
+
+    table = build_table(synth.fake_image([synth.dapi_plane(synth.grid_labels(2, 2), 1)] * 3).meta)
+    widget = ChannelTableWidget()
+    widget.set_table(table, ["MAP2"])
+    editors = widget.editors[1]
+    editors.name.setCurrentText("AT8")
+    editors.name.lineEdit().editingFinished.emit()
+    assert (table.rows[1].method, table.rows[1].judge) == ("imv", True)
+    assert editors.method.currentText() == "平均蛍光強度" and not editors.location.isEnabled()
+    assert "Ser202/Thr205" in editors.name.toolTip()
+
+    editors.method.setCurrentIndex(editors.method.findData("rate"))
+    widget._apply(editors)
+    assert table.rows[1].method == "rate" and editors.location.isEnabled()
+
+    combo = QComboBox()
+    fill_marker_names(combo, ["MAP2"])
+    assert combo.itemText(0) == "MAP2" and combo.findText("AT8") > 1, "使った名前を先に、辞書をあとに"
+    tooltip = combo.itemData(combo.findText("EP2456Y"), Qt.ItemDataRole.ToolTipRole)
+    assert "総タウ" in tooltip and "平均蛍光強度" in tooltip
+
+    widget.editors[2].name.setCurrentText("DRAQ5")
+    widget.editors[2].name.lineEdit().editingFinished.emit()
+    assert table.dapi.index == 2 and 2 not in widget.editors, "核の染色は「核を数える」になる"
+
+
+def test_intensity_tab_measures_regions_and_undo_works(tau):
+    window = tau
+    session = window.session
+    tabs = [window.canvas.tabs.tabText(index) for index in range(window.canvas.tabs.count())]
+    assert tabs == ["DAPI のみ", "DAPI＋NUC", "平均蛍光強度"], "AT8 は組み合わせのタブを作らない"
+    _tab(window, "平均蛍光強度")
+    panel = window.review_panel
+    assert panel.region_box.isVisibleTo(panel) and not panel.summary.isVisibleTo(panel)
+    assert window.canvas.mark_count() == 0
+    assert panel.intensity.item(0, 0).text() == "画像全体"
+    assert [panel.intensity.horizontalHeaderItem(c).text() for c in range(4)] == [
+        "範囲", "面積 (µm²)", "数える核", "AT8"]
+
+    panel.region_buttons["rectangle"].click()
+    layer = window.canvas._regions
+    assert str(layer.mode) == "add_rectangle" and layer.visible
+    layer.add(np.array([[10, 10], [10, 80], [70, 80], [70, 10]]), shape_type="rectangle")
+    QTest.qWait(20)
+    assert len(session.regions) == 1 and panel.intensity.item(0, 0).text() == "範囲 1"
+    layer.add(np.array([[3, 3], [3, 3.2], [3.2, 3.2], [3.2, 3]]), shape_type="rectangle")
+    QTest.qWait(20)
+    assert len(session.regions) == 1 and layer.nshapes == 1, "小さすぎる範囲は捨てる"
+
+    window.undo()
+    assert session.regions == [] and layer.nshapes == 0
+    window.redo()
+    assert layer.nshapes == 1
+    panel.clear_regions_button.click()
+    assert session.regions == [] and panel.intensity.item(0, 0).text() == "画像全体"
+
+    layer.mode = "add_ellipse"
+    assert panel.region_buttons["ellipse"].isChecked(), "napari のキーで変えてもボタンが合う"
+    nuclei = len(session.nuclei)
+    window._on_click(5.0, 5.0)
+    assert len(session.nuclei) == nuclei, "このタブのクリックで核を作らない"
+
+    _tab(window, "DAPI のみ")
+    assert not layer.visible and str(layer.mode) == "pan_zoom"
+    assert window.canvas.model.layers.selection.active is None
+    assert panel.summary.isVisibleTo(panel) and not panel.region_box.isVisibleTo(panel)
+
+
+def test_changing_the_method_after_judging_is_flagged(tau):
+    window = tau
+    editors = window.setup_panel.table_widget.editors[2]
+    editors.method.setCurrentIndex(editors.method.findData("rate"))
+    window.setup_panel.table_widget._apply(editors)
+    assert "[判定] をやり直してください" in window.stage_label.text()
+
+
+def test_result_file_name_is_previewed_and_used(tau, monkeypatch, tmp_path):
+    from cellcounter.export import results_name
+
+    window = tau
+    panel = window.output_panel
+    assert panel.export_button.isEnabled() and results_name() in panel.name_preview.text()
+    panel.name.setText("a:b")
+    assert not panel.export_button.isEnabled() and "使えない文字" in panel.name_preview.text()
+
+    warned = []
+    monkeypatch.setattr(main_window.flows.QMessageBox, "warning",
+                        lambda *args: warned.append(args[1]))
+    window.export()
+    assert warned == ["結果ファイルの名前を直してください"]
+
+    panel.name.setText("tau_day40")
+    panel.folder.setText(str(tmp_path / "out"))
+
+    def run_now(title, task, done):
+        steps = task()
+        try:
+            while True:
+                next(steps)
+        except StopIteration as finished:
+            done(finished.value)
+
+    monkeypatch.setattr(window.runner, "start", run_now)
+    monkeypatch.setattr(main_window.flows, "show_export_done", lambda *args: None)
+    window.export()
+    assert results_name("tau_day40") in os.listdir(tmp_path / "out")
+    assert panel.result.text().endswith(results_name("tau_day40"))
+
+
+def test_dictionary_dialog_registers_edits_and_deletes(window, monkeypatch):
+    from cellcounter.gui import marker_dialog
+    from cellcounter.markers import lookup
+
+    table = build_table(synth.fake_image([synth.dapi_plane(synth.grid_labels(2, 2), 1)] * 3).meta)
+    window.setup_panel.set_table(table)
+    dialog = marker_dialog.MarkerDictionaryDialog(window, window.userdata)
+
+    def fill(name, imv, comment):
+        def run(self):
+            self.name.setText(name)
+            self.imv.setChecked(imv)
+            self.comment.setPlainText(comment)
+            self.accept()
+            return self.result()
+        return run
+
+    monkeypatch.setattr(marker_dialog.MarkerEntryDialog, "exec", fill("MyTau", True, "自作の抗体"))
+    dialog.add()
+    assert lookup("my-tau").imv and dialog.edited
+    assert os.path.isfile(os.path.join(window.userdata.folder, "markers.json"))
+    assert dialog.selected().name == "MyTau"
+
+    monkeypatch.setattr(marker_dialog.MarkerEntryDialog, "exec", fill("MyTau", False, "直した"))
+    dialog.edit_selected()
+    assert not lookup("MyTau").imv and lookup("MyTau").comment == "直した"
+
+    monkeypatch.setattr(marker_dialog.MarkerEntryDialog, "exec", fill("at-8", False, ""))
+    entry = marker_dialog.MarkerEntryDialog(dialog, window.userdata.markers)
+    assert not entry.exec() and "同じ名前" in entry.error.text(), "AT8 と重なる名前は登録しない"
+
+    dialog.search.setText("mytau")
+    assert dialog.table.rowCount() == 1
+    dialog.table.selectRow(0)
+    monkeypatch.setattr(marker_dialog, "confirm", lambda *args: True)
+    dialog.remove_selected()
+    assert lookup("MyTau") is None and dialog.table.rowCount() == 0
+
+    window.setup_panel.reload_names()
+    combo = window.setup_panel.table_widget.editors[1].name
+    assert combo.findText("MyTau") < 0 and combo.findText("AT8") >= 0
+
+    dialog.reset()
+    assert len(window.userdata.markers.entries) > 100
+    again = UserData(window.userdata.folder)
+    assert again.markers.exact("AT8").imv

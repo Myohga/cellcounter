@@ -1,4 +1,4 @@
-"""利用者ごとの記憶（最近使ったファイル・使ったマーカー名・プリセット・前回のチャンネル表）。"""
+"""利用者ごとの記憶（最近使ったファイル・使ったマーカー名・プリセット・前回のチャンネル表・マーカー辞書）。"""
 
 from __future__ import annotations
 
@@ -7,14 +7,30 @@ import os
 import re
 
 from .channels import load_preset, save_preset
+from .markers import MarkerDictionary
 
 RECENT_LIMIT = 10
 _FILE = "user.json"
+MARKERS_FILE = "markers.json"
 
 
 def data_dir() -> str:
     base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, "cellcounter")
+
+
+def load_marker_dictionary(folder: str) -> tuple[MarkerDictionary, str]:
+    """利用者のマーカー辞書。まだ編集していなければ初期の辞書。読めなければ初期の辞書と知らせ。"""
+    path = os.path.join(folder, MARKERS_FILE)
+    if not os.path.isfile(path):
+        return MarkerDictionary(), ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return MarkerDictionary.from_dict(json.load(handle)), ""
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as error:
+        os.replace(path, path + ".broken")
+        return MarkerDictionary(), (f"マーカー辞書のファイルを読めなかったため、初期の辞書を使っています"
+                                    f"（読めなかったファイルは {path}.broken に残してあります）: {error}")
 
 
 class UserData:
@@ -23,7 +39,7 @@ class UserData:
         self.recent_files: list[str] = []
         self.marker_names: list[str] = []
         self.last_table: dict | None = None
-        self.notice = ""
+        self.markers, self.notice = load_marker_dictionary(self.folder)
         path = os.path.join(self.folder, _FILE)
         if not os.path.isfile(path):
             return
@@ -32,8 +48,9 @@ class UserData:
                 data = json.load(handle)
         except json.JSONDecodeError:
             os.replace(path, path + ".broken")
-            self.notice = ("設定ファイルが壊れていたため、最近使ったファイルなどの記憶を"
-                           f"作り直しました（壊れたファイルは {path}.broken に残してあります）。")
+            self.notice = " ".join(filter(None, (
+                self.notice, "設定ファイルが壊れていたため、最近使ったファイルなどの記憶を"
+                f"作り直しました（壊れたファイルは {path}.broken に残してあります）。")))
             return
         self.recent_files = data["recent_files"]
         self.marker_names = data["marker_names"]
@@ -61,6 +78,12 @@ class UserData:
                 "last_table": self.last_table}
         with open(os.path.join(self.folder, _FILE), "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=1)
+
+    def save_markers(self) -> None:
+        """マーカー辞書を書き出す。登録・編集・削除のたびに呼ぶ。"""
+        os.makedirs(self.folder, exist_ok=True)
+        with open(os.path.join(self.folder, MARKERS_FILE), "w", encoding="utf-8") as handle:
+            json.dump(self.markers.to_dict(), handle, ensure_ascii=False, indent=1)
 
     def add_recent(self, path: str) -> None:
         path = os.path.abspath(path)

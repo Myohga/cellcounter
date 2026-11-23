@@ -16,6 +16,7 @@ import numpy as np
 from . import __version__
 from .channels import ChannelTable, build_table
 from .czi import LoadedImage, read_scene
+from .intensity import Region
 from .model import ControlData, Judgement, Nucleus
 from .session import Session
 from .settings import Settings
@@ -64,6 +65,9 @@ def save_project(session: Session, path: str) -> None:
         "shown": session.shown,
         "blind": {marker: _keyed(marked) for marker, marked in session.blind.items()},
         "blind_active": session.blind_active,
+        "imv_channels": session.imv_channels,
+        "regions": [{"shape": region.shape, "points": [list(point) for point in region.points]}
+                    for region in session.regions],
         "warnings": session.warnings,
     }
     labels = io.BytesIO()
@@ -122,4 +126,8 @@ def load_project(path: str, czi_path: str | None = None,
     session.shown = data.get("shown", {})
     session.blind = {m: _unkeyed(v) for m, v in data.get("blind", {}).items()}
     session.blind_active = data.get("blind_active", False)
+    # 平均蛍光強度を足す前に保存した作業ファイルには、この 2 つが無い
+    session.imv_channels = data.get("imv_channels", {})
+    session.regions = [Region.of(stored["shape"], stored["points"])
+                       for stored in data.get("regions", [])]
     return session

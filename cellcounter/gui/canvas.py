@@ -7,19 +7,32 @@ from napari.components import ViewerModel
 from napari.qt import QtViewer
 from napari.utils.action_manager import action_manager
 from napari.utils.colormaps import Colormap, DirectLabelColormap
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import QLabel, QTabBar, QVBoxLayout, QWidget
 
+from ..intensity import SHAPE_LABELS, Region, same_regions
 from ..overlay import COLORS, rgb_of
 from ..quality import full_scale
-from ..session import Session, tab_name
+from ..session import IMV_TAB, Session, tab_name
 from .shortcuts import REPLACED_NAPARI_ACTIONS, UNUSED_NAPARI_ACTIONS
 
 CLICK_TOLERANCE_PX = 4.0
 MARK_HALF_LENGTH = 0.30   # 核の標準直径に対する、× の腕の長さ
 MARK_SCREEN_WIDTH = 1.6   # × の線の太さ（画面上のピクセル）
+REGION_SCREEN_WIDTH = 2.0  # 平均蛍光強度を測る範囲の縁の太さ（画面上のピクセル）
+REGION_COLOR = "white"
 # napari の既定（nearest）だと、縮小表示で画素が間引かれてざらつき、拡大で四角く見える
 INTERPOLATION = "cubic"
+# 範囲の描き方（③ のボタン）と、napari の図形レイヤーのモード
+REGION_MODES = {"pan": "pan_zoom", "select": "select", "rectangle": "add_rectangle",
+                "ellipse": "add_ellipse", "polygon": "add_polygon", "lasso": "add_polygon_lasso"}
+_FINISHED = {"added", "changed", "removed"}
+MIN_REGION_PX = 1.0  # これより小さい範囲（クリックしただけの四角形など）は捨てる
+
+
+def _polygon_area(points: np.ndarray) -> float:
+    y, x = points[:, 0], points[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
 
 
 class Canvas(QWidget):
@@ -27,6 +40,8 @@ class Canvas(QWidget):
 
     clicked = Signal(float, float)
     tab_changed = Signal()
+    regions_edited = Signal(list)      # 描き終えた・動かした・消した範囲（list[Region]）
+    region_mode_changed = Signal(str)  # REGION_MODES のキー
 
     def __init__(self) -> None:
         super().__init__()
@@ -59,6 +74,8 @@ class Canvas(QWidget):
         self._images: dict[int, object] = {}
         self._outline = None
         self._marks = None
+        self._regions = None
+        self._updating_regions = False
         self._hovered: int | None = None
         self._um = 1.0
         self.marks_visible = True
@@ -101,6 +118,18 @@ class Canvas(QWidget):
         self._outline.visible = False
         self._marks = self.model.add_vectors(np.empty((0, 2, 2)), name="×", vector_style="line",
                                              length=1, opacity=1.0, **placed)
+        self._regions = self.model.add_shapes(
+            None, ndim=2, name="測る範囲", edge_color=REGION_COLOR, face_color="transparent",
+            opacity=1.0, features={"label": np.array([], dtype=str)},
+            text={"string": "{label}", "color": REGION_COLOR, "anchor": "upper_left", "size": 11},
+            **placed)
+        self._regions.current_edge_color = REGION_COLOR
+        self._regions.current_face_color = "transparent"
+        self._regions.feature_defaults = {"label": ""}
+        self._regions.visible = False
+        self._regions.events.data.connect(self._on_region_data)
+        self._regions.events.mode.connect(lambda _event: self.region_mode_changed.emit(
+            self.region_mode()))
         self.model.canvas.overlays.scale_bar.visible = True
         # レイヤーを選んだ状態にしない（選ぶと、napari のレイヤー用のキーが効いてしまう）
         self.model.layers.selection.clear()
@@ -136,7 +165,7 @@ class Canvas(QWidget):
             self._marks.visible = visible
 
     def refresh(self) -> None:
-        """背景・輪郭・× を、いまの組み合わせと作業状態に合わせる。"""
+        """背景・輪郭・×・範囲を、いまの組み合わせと作業状態に合わせる。"""
         session = self._session
         if session is None:
             return
@@ -147,9 +176,106 @@ class Canvas(QWidget):
         if session.labels is not None:
             self._outline.data = session.labels
         self._draw_marks(marker)
+        self._show_regions(marker == IMV_TAB)
+
+    # ---- 平均蛍光強度を測る範囲 ---------------------------------------------------
+
+    def region_mode(self) -> str:
+        mode = str(self._regions.mode) if self._regions is not None else "pan_zoom"
+        return next((key for key, value in REGION_MODES.items() if value == mode), "pan")
+
+    def set_region_mode(self, key: str) -> None:
+        """③ のボタンで選んだ描き方にする。キー操作（Esc・Delete）がすぐ効くよう、画像に焦点を移す。"""
+        if self._regions is None or self.current_marker() != IMV_TAB:
+            return
+        self._regions.mode = REGION_MODES[key]
+        self.view.canvas.native.setFocus()
+
+    def delete_selected_regions(self) -> None:
+        if self._regions is not None and self._regions.selected_data:
+            self._regions.remove_selected()
+
+    def _show_regions(self, active: bool) -> None:
+        """平均蛍光強度のタブでだけ範囲を出し、描けるようにする。ほかのタブでは隠して触れなくする。"""
+        layer, session = self._regions, self._session
+        if layer is None:
+            return
+        self._load_regions(session.regions)
+        layer.visible = active
+        if active and session.labels is not None:
+            if self.model.layers.selection.active is not layer:
+                self.model.layers.selection.active = layer
+        else:
+            if str(layer.mode) != "pan_zoom":
+                layer.mode = "pan_zoom"
+            # レイヤーを選んだ状態にしない（選ぶと、napari のレイヤー用のキーが効いてしまう）
+            self.model.layers.selection.clear()
+
+    def _creating(self) -> bool:
+        return bool(getattr(self._regions, "_is_creating", False))
+
+    def _layer_regions(self) -> list[Region | None]:
+        """レイヤーの図形を範囲にする。範囲にならないもの（線・小さすぎるもの）は None。"""
+        found = []
+        for data, kind in zip(self._regions.data, self._regions.shape_type):
+            region = None
+            if kind in SHAPE_LABELS:
+                try:
+                    region = Region.of(kind, data)
+                except ValueError:
+                    region = None
+            if region is not None and _polygon_area(region.outline()) < MIN_REGION_PX:
+                region = None
+            found.append(region)
+        return found
+
+    def _load_regions(self, regions: list[Region]) -> None:
+        """作業状態の範囲をレイヤーに写す（元に戻す・作業ファイルを開いたときなど）。描いている途中は触らない。"""
+        if self._creating() or same_regions(self._layer_regions(), list(regions)):
+            return
+        layer = self._regions
+        self._updating_regions = True
+        try:
+            layer.selected_data = set()
+            layer.data = []
+            if regions:
+                layer.add([np.array(region.points) for region in regions],
+                          shape_type=[region.shape for region in regions],
+                          edge_color=REGION_COLOR, face_color="transparent")
+            self._number_regions()
+        finally:
+            self._updating_regions = False
+        self._fit_mark_width()
+
+    def _number_regions(self) -> None:
+        """範囲の左上に、③ や Excel の「範囲 1」「範囲 2」と同じ番号を出す。"""
+        self._regions.features = {"label": [str(number)
+                                            for number in range(1, self._regions.nshapes + 1)]}
+
+    def _on_region_data(self, event) -> None:
+        if self._updating_regions or str(getattr(event, "action", "")) not in _FINISHED:
+            return
+        # napari は描き終える前にも「足した」と知らせるので、処理が一段落してから読む
+        QTimer.singleShot(0, self._emit_regions)
+
+    def _emit_regions(self) -> None:
+        if self._regions is None or self._creating():
+            return
+        regions = [region for region in self._layer_regions() if region is not None]
+        if not same_regions(regions, self._session.regions):
+            self.regions_edited.emit(regions)
+        # 捨てた図形（小さすぎる・線）を消し、番号を付け直す
+        self._load_regions(self._session.regions)
+        self._updating_regions = True
+        try:
+            if len(self._regions.features) == self._regions.nshapes:
+                self._number_regions()
+        finally:
+            self._updating_regions = False
+        self._fit_mark_width()
 
     def _draw_marks(self, marker: str | None) -> None:
-        """× を 2 本の細い線で描く。核 1 個につき線が 2 本。"""
+        """× を 2 本の細い線で描く。核 1 個につき線が 2 本。平均蛍光強度のタブでは描かない。"""
         session = self._session
         lines, colors = [], []
         if session.labels is not None and (marker is None or marker in session.judgements):
@@ -169,10 +295,15 @@ class Canvas(QWidget):
         self._fit_mark_width()
 
     def _fit_mark_width(self) -> None:
-        """拡大・縮小しても、× の線が画面上で同じ太さに見えるようにする。"""
+        """拡大・縮小しても、× と範囲の線が画面上で同じ太さに見えるようにする。"""
+        on_screen = max(self.model.scene.camera.zoom * self._um, 1e-6)
         if self._marks is not None:
-            on_screen = max(self.model.scene.camera.zoom * self._um, 1e-6)
             self._marks.edge_width = MARK_SCREEN_WIDTH / on_screen
+        if self._regions is not None:
+            width = REGION_SCREEN_WIDTH / on_screen
+            self._regions.current_edge_width = width
+            if self._regions.nshapes:
+                self._regions.edge_width = width
 
     def _on_tab(self, _index: int) -> None:
         self.refresh()
@@ -200,7 +331,9 @@ class Canvas(QWidget):
         if session is None or session.labels is None:
             return
         try:
-            hovered = session.nucleus_at(*self._pixel(event))
+            # 平均蛍光強度のタブでは核を直さないので、輪郭も出さない
+            hovered = None if self.current_marker() == IMV_TAB else session.nucleus_at(
+                *self._pixel(event))
         except ValueError:
             hovered = None
         if hovered != self._hovered:

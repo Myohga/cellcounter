@@ -11,7 +11,7 @@ from cellcounter.batch import (BatchItem, condition_of, condition_stats, refresh
 from cellcounter.czi import project_z
 from cellcounter.environment import environment_report
 from cellcounter.excel import TABLE_TOP
-from cellcounter.export import export_results
+from cellcounter.export import export_results, results_name
 from cellcounter.project import load_project, save_project
 from cellcounter.settings import Settings
 from cellcounter.tally import agreement, summarize, threshold_curves
@@ -111,7 +111,7 @@ def test_blind_judgement_is_saved_and_exported(blind, tmp_path):
     assert resumed.blind_active and agreement(resumed) == agreement(blind)
 
     folder = export_results(blind, str(tmp_path / "out"))
-    book = load_workbook(os.path.join(folder, "results.xlsx"))
+    book = load_workbook(os.path.join(folder, results_name()))
     assert book.sheetnames[-2:] == ["Thresholds", "Agreement"]
     row = [cell.value for cell in book["Agreement"][TABLE_TOP + 1]]
     assert row[:6] == ["NUC", 100, 30, 10, 0, 60]
@@ -153,7 +153,7 @@ def test_batch_writes_one_summary_and_can_be_refreshed(tmp_path):
     assert not any(row.provisional for row in rows)
     assert messages[0].startswith("1 / 3") and len(messages) == 3
     for row in rows:
-        assert {"results.xlsx"} <= set(os.listdir(row.folder))
+        assert {results_name()} <= set(os.listdir(row.folder))
 
     header, table = condition_stats(rows)
     assert header[:4] == ["条件", "画像の枚数", "NUC 平均 (%)", "NUC SD (%)"]

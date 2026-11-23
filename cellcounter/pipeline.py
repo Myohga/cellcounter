@@ -66,7 +66,10 @@ def run_detection(session: Session, segmenter: Segmenter = segment_nuclei) -> No
 
 
 def run_judgement(session: Session, control: ControlData | None = None) -> None:
-    """ON にしたマーカーを自動判定する。陰性対照が無ければ固定値で判定し、暫定とする。"""
+    """ON にしたマーカーを自動判定する。陰性対照が無ければ固定値で判定し、暫定とする。
+
+    判定法を平均蛍光強度にしたマーカーは、陽性・陰性を決めない（範囲の明るさを測るだけ）。
+    """
     if session.labels is None:
         raise RuntimeError("先に核を検出してください。")
     problems = session.table.problems()
@@ -78,6 +81,8 @@ def run_judgement(session: Session, control: ControlData | None = None) -> None:
     ids = np.array(sorted(session.nuclei))
     geometry = Geometry(session.labels)
     session.judgements = {}
+    # 平均蛍光強度は範囲を描いたときに測るので、ここではどのマーカーを測るかだけを決める
+    session.imv_channels = {row.marker: row.index for row in session.table.imv()}
     session.control = control
     session.history.clear()
     session.blind_active, session.blind = False, {}
